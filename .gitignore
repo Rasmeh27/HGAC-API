@@ -18,7 +18,9 @@ __pycache__/
 
 # Datos locales y evidencia
 data/
-evidence/snapshots/
+evidence/snapshots/*.jpg
+evidence/lpr/frames/*.jpg
+evidence/lpr/crops/*.jpg
 
 # IDE / editores
 .vscode/

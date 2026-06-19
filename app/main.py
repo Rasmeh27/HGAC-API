@@ -5,20 +5,24 @@ Levantar con:
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.api.routes import (
     biostar_routes,
+    camera_routes,
     crossing_routes,
     health_routes,
+    lpr_reads_routes,
     lpr_routes,
     monitor_routes,
     rntt_routes,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import AppError, IntegrationError
 from app.core.logging import configure_logging
 
@@ -47,14 +51,35 @@ def create_app() -> FastAPI:
 
     app.include_router(health_routes.router)
     app.include_router(lpr_routes.router)
+    app.include_router(lpr_reads_routes.router)
     app.include_router(monitor_routes.router)
     app.include_router(biostar_routes.router)
     app.include_router(rntt_routes.router)
     app.include_router(crossing_routes.router)
+    app.include_router(camera_routes.router)
 
+    _mount_evidence_static(app, settings)
     _register_exception_handlers(app)
 
     return app
+
+
+def _mount_evidence_static(app: FastAPI, settings: Settings) -> None:
+    """Sirve la carpeta de evidencia para que Ignition (y el navegador) puedan
+    abrir los snapshots por URL pública.
+
+    `evidence_base_path` apunta al subdirectorio de snapshots (p.ej.
+    ``./evidence/snapshots``); montamos su carpeta raíz (``evidence``) en
+    ``/evidence`` para que las URLs queden como
+    ``/evidence/snapshots/<filename>``.
+    """
+    evidence_root = Path(settings.evidence_base_path).parent
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/evidence",
+        StaticFiles(directory=str(evidence_root)),
+        name="evidence",
+    )
 
 
 def _register_exception_handlers(app: FastAPI) -> None:

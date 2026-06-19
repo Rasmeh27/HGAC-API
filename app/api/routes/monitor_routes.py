@@ -25,9 +25,6 @@ from app.core.config import Settings
 
 router = APIRouter(prefix="/monitor", tags=["Monitor"])
 
-_DEFAULT_MONITOR_FPS = 8
-_DEFAULT_JPEG_QUALITY = 80
-
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
@@ -45,9 +42,8 @@ def monitor_status(settings: Settings = Depends(settings_provider)) -> dict[str,
     return {
         "camera_provider": settings.camera_provider,
         "camera_source": _build_safe_camera_source(settings),
-        "monitor_fps": _DEFAULT_MONITOR_FPS,
+        "monitor_fps": settings.monitor_fps,
     }
-
 
 @router.get("/video")
 def video_stream(settings: Settings = Depends(settings_provider)) -> StreamingResponse:
@@ -61,7 +57,11 @@ def video_stream(settings: Settings = Depends(settings_provider)) -> StreamingRe
         )
 
     return StreamingResponse(
-        _generate_mjpeg_stream(source),
+        _generate_mjpeg_stream(
+            source=source,
+            fps=settings.monitor_fps,
+            jpeg_quality=settings.monitor_jpeg_quality,
+        ),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -85,7 +85,11 @@ def _build_safe_camera_source(settings: Settings) -> str:
     return f"{parsed_url.scheme}://{parsed_url.hostname}{port}{path}"
 
 
-def _generate_mjpeg_stream(source: str | int) -> Generator[bytes, None, None]:
+def _generate_mjpeg_stream(
+    source: str | int,
+    fps: int,
+    jpeg_quality: int,
+) -> Generator[bytes, None, None]:
     capture = cv2.VideoCapture(source)
 
     if not capture.isOpened():
@@ -93,7 +97,10 @@ def _generate_mjpeg_stream(source: str | int) -> Generator[bytes, None, None]:
         return
 
     capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    frame_delay_seconds = 1 / _DEFAULT_MONITOR_FPS
+
+    safe_fps = max(1, min(fps, 30))
+    safe_jpeg_quality = max(40, min(jpeg_quality, 95))
+    frame_delay_seconds = 1 / safe_fps
 
     try:
         while True:
@@ -107,7 +114,7 @@ def _generate_mjpeg_stream(source: str | int) -> Generator[bytes, None, None]:
             ok, buffer = cv2.imencode(
                 ".jpg",
                 frame,
-                [int(cv2.IMWRITE_JPEG_QUALITY), _DEFAULT_JPEG_QUALITY],
+                [int(cv2.IMWRITE_JPEG_QUALITY), safe_jpeg_quality],
             )
 
             if not ok:

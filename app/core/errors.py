@@ -27,6 +27,15 @@ class CameraTimeoutError(CameraError):
     """Timeout al capturar frame."""
 
 
+class CameraNotFoundError(AppError):
+    """El `camera_id` solicitado no existe en el registro de cámaras.
+
+    No hereda de `CameraError` (IntegrationError): es un fallo de búsqueda/
+    configuración, no de comunicación con el hardware. La capa API la mapea
+    a 404, no a 502/503.
+    """
+
+
 # --- LPR ---
 class LprError(IntegrationError):
     """Error del servicio de reconocimiento de placas."""

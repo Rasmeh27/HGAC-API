@@ -9,12 +9,12 @@ PoC inicial y mantiene el resto del backend testeable).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
 
-from app.core.errors import RnttError, RnttPlateNotFoundError, RnttTimeoutError
+from app.core.errors import RnttError, RnttPlateNotFoundError
 
 
 class RnttClient(ABC):

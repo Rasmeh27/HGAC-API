@@ -7,7 +7,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.core.errors import RnttError, RnttPlateNotFoundError, RnttTimeoutError
+from app.core.errors import RnttPlateNotFoundError
 from app.integrations.rntt.rntt_client import RnttClient
 from app.integrations.rntt.rntt_models import RnttPolicy, RnttResult, RnttVehicle
 

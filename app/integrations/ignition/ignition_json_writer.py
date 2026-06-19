@@ -7,10 +7,8 @@ Ignition consuma directamente el API REST, este módulo se podrá retirar.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel
