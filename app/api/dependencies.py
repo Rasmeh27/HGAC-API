@@ -7,15 +7,23 @@ tests con `app.dependency_overrides`.
 
 from functools import lru_cache
 
+from fastapi import HTTPException, status
+
 from app.core.config import Settings, get_settings
+from app.core.errors import IntegrationError
 from app.integrations.biostar.biostar_factory import build_biostar_service
 from app.integrations.biostar.biostar_service import BioStarService
 from app.integrations.ignition.ignition_factory import build_ignition_writer
 from app.integrations.ignition.ignition_json_writer import IgnitionJsonWriter
 from app.integrations.lpr.lpr_factory import build_lpr_service
 from app.integrations.lpr.lpr_service import LprService
-from app.integrations.rntt.rntt_factory import build_rntt_service
+from app.integrations.navis.navis_factory import build_navis_service
+from app.integrations.navis.navis_service import NavisService
+from app.integrations.rntt.rntt_factory import build_rntt_asmx_service, build_rntt_service
+from app.integrations.rntt.rntt_asmx_service import RnttAsmxService
 from app.integrations.rntt.rntt_service import RnttService
+from app.integrations.wialon.wialon_factory import build_wialon_service
+from app.integrations.wialon.wialon_service import WialonService
 from app.integrations.camera.camera_provider import StreamOptions
 from app.integrations.lpr.lpr_engine import LprEngine
 from app.integrations.lpr.opencv_easyocr_lpr_engine import OpenCvEasyOcrLprEngine
@@ -53,6 +61,21 @@ def _cached_rntt_service() -> RnttService:
 @lru_cache
 def _cached_biostar_service() -> BioStarService:
     return build_biostar_service()
+
+
+@lru_cache
+def _cached_rntt_asmx_service() -> RnttAsmxService:
+    return build_rntt_asmx_service()
+
+
+@lru_cache
+def _cached_navis_service() -> NavisService:
+    return build_navis_service()
+
+
+@lru_cache
+def _cached_wialon_service() -> WialonService:
+    return build_wialon_service()
 
 
 @lru_cache
@@ -105,6 +128,33 @@ def biostar_service_provider() -> BioStarService:
     return _cached_biostar_service()
 
 
+def _build_or_503(builder, system: str):
+    """Construye un servicio de integración; si falta configuración → HTTP 503.
+
+    Los constructores de cliente validan credenciales/host y lanzan
+    ``IntegrationError`` cuando faltan; lo traducimos a 503 (no configurado) en
+    lugar de 502, sin tocar la red.
+    """
+    try:
+        return builder()
+    except IntegrationError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"{system} no configurado: {exc}"
+        ) from exc
+
+
+def rntt_asmx_service_provider() -> RnttAsmxService:
+    return _build_or_503(_cached_rntt_asmx_service, "RNTT")
+
+
+def navis_service_provider() -> NavisService:
+    return _build_or_503(_cached_navis_service, "Navis")
+
+
+def wialon_service_provider() -> WialonService:
+    return _build_or_503(_cached_wialon_service, "Wialon")
+
+
 def crossing_service_provider() -> CrossingService:
     return _cached_crossing_service()
 
@@ -133,6 +183,9 @@ def _build_lpr_engine(
             mode=settings.lpr_mode,
             min_serial_digits=settings.lpr_min_serial_digits,
             early_stop_confidence=settings.lpr_read_min_confidence,
+            pad_left_ratio=settings.lpr_pad_left_ratio,
+            pad_right_ratio=settings.lpr_pad_right_ratio,
+            pad_y_ratio=settings.lpr_pad_y_ratio,
         )
     raise ValueError(f"LPR engine no soportado: {settings.lpr_engine}")
 

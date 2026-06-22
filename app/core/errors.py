@@ -62,6 +62,10 @@ class BioStarUserNotFoundError(BioStarError):
     """No se encontró el usuario consultado."""
 
 
+class BioStarDeviceNotFoundError(BioStarError):
+    """No se encontró el dispositivo solicitado (por id, IP o nombre)."""
+
+
 # --- RNTT ---
 class RnttError(IntegrationError):
     """Error consultando RNTT."""
@@ -73,6 +77,32 @@ class RnttTimeoutError(RnttError):
 
 class RnttPlateNotFoundError(RnttError):
     """La placa no existe en el portal."""
+
+
+# --- Navis (API interna HIT) ---
+class NavisError(IntegrationError):
+    """Error genérico consultando Navis."""
+
+
+class NavisAuthenticationError(NavisError):
+    """No se pudo obtener el token OAuth de Navis."""
+
+
+class NavisTimeoutError(NavisError):
+    """Navis no respondió a tiempo."""
+
+
+# --- Wialon (GPS Gurtam) ---
+class WialonError(IntegrationError):
+    """Error genérico consultando Wialon."""
+
+
+class WialonAuthenticationError(WialonError):
+    """Login con token fallido o sesión expirada."""
+
+
+class WialonTimeoutError(WialonError):
+    """Wialon no respondió a tiempo."""
 
 
 # --- Ignition ---

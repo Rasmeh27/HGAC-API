@@ -286,6 +286,94 @@ Cubre el endpoint `/health` y todas las ramas de las reglas de cruce.
 
 ---
 
+## Integraciones del handoff (RNTT / BioStar / Navis / Wialon)
+
+Estas integraciones provienen de scripts de prueba ya validados por el equipo
+contra los sistemas reales del puerto. Se portaron a módulos backend limpios
+(`client` + `service` + `models` + `factory`, igual que el resto) y se exponen
+bajo `/api/v1/integrations`. **Cada "monitor continuo" de los scripts originales
+se convirtió en un servicio consultable (una llamada = un tick); el monitoreo
+periódico queda como paso siguiente (no hay background jobs en el backend hoy).**
+
+> ⚠️ **LPR del zip excluido a propósito.** El handoff incluía un LPR basado en
+> Plate Recognizer (API de paga) y `test_camera_lpr.py`. **No se integró**: el
+> proyecto ya tiene su propio LPR (`app/integrations/lpr` + `app/modules/lpr`,
+> `POST /api/v1/lpr/reads`), que queda **intacto**. No se añadió
+> `PLATE_RECOGNIZER_TOKEN` ni lógica de Plate Recognizer del zip.
+
+### Endpoints nuevos
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET`  | `/api/v1/integrations/health` | Qué integraciones están configuradas (sin exponer secretos) |
+| `POST` | `/api/v1/integrations/rntt/query` | Consulta RNTT ASMX: chofer (`rntt`/`licencia`/`cedula`) o camión (`placa`/`rotulo`/`chasis`/`rfid`) |
+| `POST` | `/api/v1/integrations/rntt/combined-query` | Consulta combinada chofer↔camión por Rótulo |
+| `POST` | `/api/v1/integrations/navis/query` | Navis: `truck-info` y/o `driver-info` consolidados |
+| `GET`  | `/api/v1/integrations/biostar/devices` | Lista dispositivos BioStar (resuelve IP del nombre) |
+| `POST` | `/api/v1/integrations/biostar/events/recent` | Eventos recientes (opcional: por dispositivo / solo validación) |
+| `POST` | `/api/v1/integrations/biostar/validate-event` | Valida un evento de acceso → PASA/NO PASA |
+| `GET`  | `/api/v1/integrations/wialon/units` | Resumen de todas las unidades GPS + clasificación de geocercas |
+| `GET`  | `/api/v1/integrations/wialon/unit/{unit_id_or_name}` | Una unidad por ID interno, unique ID/IMEI o nombre |
+
+Errores: timeout → `504`; auth/upstream → `502`; recurso no encontrado
+(dispositivo/unidad) → `404`; integración **no configurada** → `503`.
+
+### Variables de entorno
+
+| Variable | Descripción |
+|---|---|
+| `RNTT_BASE_URL`, `RNTT_USERNAME`, `RNTT_PASSWORD` | API ASMX RNTT |
+| `RNTT_AUTH_MODE` | `header` (confirmado en producción) o `hmac` |
+| `RNTT_ENABLE_DIAGNOSTIC_FALLBACKS` | DEBUG: intentos extra del script original (incluye no-auth). Dejar `false` |
+| `BIOSTAR_HOST`, `BIOSTAR_PORT`, `BIOSTAR_USERNAME`, `BIOSTAR_PASSWORD` | BioStar 2 remoto |
+| `BIOSTAR_VERIFY_SSL` | Verificación SSL **explícita** (`false` para autofirmados) |
+| `BIOSTAR_DISPLAY_TIMEZONE` | Zona para mostrar eventos (def. `America/Santo_Domingo`) |
+| `BIOSTAR_USERS_CACHE_TTL_SECONDS`, `BIOSTAR_EVENTS_HOURS_BACK` | Caché de padrón / ventana de eventos |
+| `BIOSTAR_LOCAL_HOST/PORT/SCHEME/USER/PASSWORD` | Perfil BioStar local (lector facial) |
+| `NAVIS_API_BASE`, `NAVIS_TOKEN_URL`, `NAVIS_TOKEN_PATH` | Endpoints Navis (OAuth) |
+| `NAVIS_GRANT_TYPE`, `NAVIS_CLIENT_ID`, `NAVIS_CLIENT_SECRET`, `NAVIS_USERNAME`, `NAVIS_PASSWORD`, `NAVIS_SCOPE` | Credenciales OAuth password grant |
+| `WIALON_TOKEN`, `WIALON_HOST` | Token y host Wialon (nube o local de HIT) |
+| `WIALON_ONLINE_SECONDS` | Edad máx. del GPS para marcar "online" |
+| `WIALON_TERMINAL_GEOFENCE_NAMES`, `WIALON_GATE_ZONE_KEYWORDS` | Geocercas (CSV) |
+
+Plantilla completa en `.env.example`. Todas las credenciales vienen de
+configuración: **nada hardcodeado y nunca se loguean tokens/passwords**.
+
+### Cómo probar (con mocks, sin servicios reales)
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt   # incluye tzdata (zoneinfo en Windows)
+pytest -q
+```
+
+Las pruebas (`tests/test_rntt_asmx.py`, `test_navis.py`, `test_wialon.py`,
+`test_biostar_events.py`) inyectan clientes/sesiones falsas en los servicios —
+**no hacen llamadas externas reales**. `GET /api/v1/integrations/health` responde
+sin credenciales; el resto devuelve `503` mientras no se configuren.
+
+### Mapeo a tags de Ignition (contrato de datos)
+
+Los scripts `ignition_scripts/HGAC_0x` se usaron **solo como referencia del shape
+esperado**. Las respuestas REST replican las claves que esos scripts leen, para
+que el ingest de Ignition sea de mapeo mínimo (no se modifica el LPR ni su
+contrato; no se añadió writer de archivos ni base de datos):
+
+| Sistema | Respuesta REST → tags Ignition |
+|---|---|
+| BioStar | `validate-event` → `permitir_paso`, `decision_sugerida`, `estado`, `motivo`, `credentials.{has_card,has_fingerprint,has_face,event_method}`, `event_time`, `event_type`, `event_type_code`, `user_id`, `nombre`, `device.{id,name,ip}` |
+| RNTT | `combined-query` → `{source, queried_at, driver, truck, related_queries}` |
+| Navis | `query` → `{source, timestamp, success, status, truck, driver, results}` |
+| Wialon | `units` → `{unidades[], selected_unit{...}}` con `id/nombre/lat/lon/velocidad/online/inside_terminal/inside_gate_zone/...` |
+
+### Pendiente para producción
+
+- Monitoreo continuo (background tasks/worker) en vez de polling por endpoint.
+- Confirmar definitivamente la autenticación RNTT y obtener el **catálogo oficial**
+  de estados (los actuales son *observados/inferidos*, no oficiales).
+- Persistencia/auditoría de decisiones (hoy el backend no persiste).
+- Sesión BioStar/SID Wialon de larga duración y manejo de carga del padrón grande.
+
 ## Decisiones de diseño
 
 - **Configuración centralizada en `app/core/config.py`** — un único `Settings`
@@ -309,6 +397,8 @@ Cubre el endpoint `/health` y todas las ramas de las reglas de cruce.
 
 ## Roadmap PoC
 
+- [x] Portar las integraciones del handoff (RNTT ASMX, BioStar eventos, Navis, Wialon) a `/api/v1/integrations`.
+- [ ] Monitoreo continuo (background worker) para BioStar/Wialon en vez de polling por endpoint.
 - [ ] Portar el script Selenium real al `SeleniumRnttClient`.
 - [ ] Integrar Mobotix vía `RtspCameraProvider`.
 - [ ] Cambiar puente JSON por consumo REST nativo desde Ignition.

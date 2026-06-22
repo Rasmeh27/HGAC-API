@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     lpr_mode: Literal["fast", "balanced", "exhaustive"] = "balanced"
     # Mínimo de dígitos para que un candidato pueda ser placa (descarta encabezados).
     lpr_min_serial_digits: int = 3
+    # Padding del recorte de placa antes del OCR. Asimétrico: más margen a la
+    # izquierda para no cortar la letra inicial de la placa.
+    lpr_pad_left_ratio: float = 0.35
+    lpr_pad_right_ratio: float = 0.15
+    lpr_pad_y_ratio: float = 0.12
     # Formato(s) esperado(s) de placa: CSV de nombres del catálogo
     # (LETTER_6_DIGITS, TWO_LETTERS_5_DIGITS). Criterio DURO de aceptación: una
     # lectura solo es PLATE_DETECTED si cumple alguno; si no, FORMAT_MISMATCH.
@@ -97,12 +102,57 @@ class Settings(BaseSettings):
     biostar_password: str = ""
     biostar_verify_ssl: bool = False
     biostar_timeout_seconds: int = 10
+    # Zona horaria para mostrar los eventos de BioStar (UTC en el API → local).
+    biostar_display_timezone: str = "America/Santo_Domingo"
+    # Caché en memoria del padrón de usuarios (estado activo + credenciales).
+    biostar_users_cache_ttl_seconds: int = 60
+    # Ventana hacia atrás al consultar eventos recientes.
+    biostar_events_hours_back: int = 24
+    # Perfil BioStar local (lector facial conectado a esta PC). Opcional.
+    biostar_local_host: str = "127.0.0.1"
+    biostar_local_port: int = 443
+    biostar_local_scheme: Literal["http", "https"] = "https"
+    biostar_local_user: str = ""
+    biostar_local_password: str = ""
 
-    # --- RNTT ---
+    # --- RNTT (portal/stub legacy; alimenta /crossing/evaluate) ---
     rntt_portal_url: str = ""
     rntt_timeout_seconds: int = 30
     rntt_headless: bool = True
     rntt_use_stub: bool = True
+
+    # --- RNTT API ASMX (consulta real chofer/camión) ---
+    rntt_base_url: str = ""
+    rntt_username: str = ""
+    rntt_password: str = ""
+    # Modo de autenticación confirmado en producción: headers Username/Password.
+    # `hmac` arma Username/Time/Token = HMAC_SHA256(user+time, key=password).
+    rntt_auth_mode: Literal["header", "hmac"] = "header"
+    # DEBUG: habilita los intentos de diagnóstico del script original (incluye
+    # combinaciones inseguras como no-auth). Apagado por defecto.
+    rntt_enable_diagnostic_fallbacks: bool = False
+
+    # --- Navis (API interna HIT, OAuth password grant) ---
+    navis_api_base: str = ""
+    navis_token_url: str = ""
+    navis_token_path: str = "oauth/token"
+    navis_grant_type: str = "password"
+    navis_client_id: str = ""
+    navis_client_secret: str = ""
+    navis_username: str = ""
+    navis_password: str = ""
+    navis_scope: str = ""
+    navis_timeout_seconds: int = 25
+
+    # --- Wialon (GPS Gurtam; nube o local de HIT) ---
+    wialon_token: str = ""
+    wialon_host: str = "https://hst-api.wialon.com"
+    wialon_timeout_seconds: int = 15
+    # Edad máxima del último reporte GPS (s) para considerar la unidad "online".
+    wialon_online_seconds: int = 300
+    # Geocercas (CSV) que cuentan como "terminal" y palabras clave de zona de gate.
+    wialon_terminal_geofence_names: str = "TERMINAL GENERAL,TERMINAL"
+    wialon_gate_zone_keywords: str = "GATE,ENTRADA,SALIDA,GARITA,CARRIL,ACCESO,RUTA ENTRADA"
 
     # --- Ignition ---
     ignition_json_output_dir: str = "./data/ignition_outbox"
@@ -126,6 +176,10 @@ class Settings(BaseSettings):
     def biostar_base_url(self) -> str:
         scheme = "https" if self.biostar_port == 443 else "http"
         return f"{scheme}://{self.biostar_host}:{self.biostar_port}"
+
+    @property
+    def biostar_local_base_url(self) -> str:
+        return f"{self.biostar_local_scheme}://{self.biostar_local_host}:{self.biostar_local_port}"
 
 
 @lru_cache

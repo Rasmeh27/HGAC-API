@@ -100,6 +100,14 @@ def test_scoring_prefers_format_match_over_higher_confidence() -> None:
     assert engine._matches_format("460432") is False
 
 
+def test_valid_plate_beats_numeric_only_even_with_lower_confidence() -> None:
+    # El bug: "460432"@99.9 NO debe superar a un "L460432"@60 válido.
+    engine = _engine()
+    valid = _cand("L460432", 60.0)
+    numeric_only = _cand("460432", 99.9)
+    assert engine._score(valid) > engine._score(numeric_only)
+
+
 # --- F: los modos escalan regiones/ROIs/variantes ---
 
 
@@ -131,19 +139,52 @@ def test_engine_selects_profile_by_mode() -> None:
 def test_pad_crop_expands_region_by_ratios() -> None:
     image = np.zeros((100, 200, 3), dtype=np.uint8)
     crop = OpenCvEasyOcrLprEngine._pad_crop(
-        image, x=50, y=30, width=100, height=40, pad_x_ratio=0.2, pad_y_ratio=0.1
+        image,
+        x=50,
+        y=30,
+        width=100,
+        height=40,
+        pad_left_ratio=0.2,
+        pad_right_ratio=0.2,
+        pad_y_ratio=0.1,
     )
     height, width = crop.shape[:2]
-    assert width == 140  # 100 + 2*20
+    assert width == 140  # 100 + 20 (izq) + 20 (der)
     assert height == 48  # 40 + 2*4
 
 
 def test_pad_crop_clamps_at_image_edges() -> None:
     image = np.zeros((50, 50, 3), dtype=np.uint8)
     crop = OpenCvEasyOcrLprEngine._pad_crop(
-        image, x=0, y=0, width=50, height=50, pad_x_ratio=0.5, pad_y_ratio=0.5
+        image,
+        x=0,
+        y=0,
+        width=50,
+        height=50,
+        pad_left_ratio=0.5,
+        pad_right_ratio=0.5,
+        pad_y_ratio=0.5,
     )
     assert crop.shape[:2] == (50, 50)
+
+
+def test_pad_crop_uses_more_left_margin() -> None:
+    # Padding asimétrico: con más margen izquierdo el recorte alcanza contenido
+    # más a la izquierda de la región (la letra inicial de la placa).
+    image = np.zeros((100, 400, 3), dtype=np.uint8)
+    image[:, 175] = 255  # columna blanca 25 px a la izquierda de la región (x=200)
+    region = {"x": 200, "y": 40, "width": 100, "height": 20}
+
+    wide_left = OpenCvEasyOcrLprEngine._pad_crop(
+        image, **region, pad_left_ratio=0.30, pad_right_ratio=0.10, pad_y_ratio=0.10
+    )
+    narrow_left = OpenCvEasyOcrLprEngine._pad_crop(
+        image, **region, pad_left_ratio=0.10, pad_right_ratio=0.10, pad_y_ratio=0.10
+    )
+    # pad izquierdo 30 -> empieza en x=170 -> incluye la columna en x=175.
+    assert int(wide_left[:, :, 0].max()) == 255
+    # pad izquierdo 10 -> empieza en x=190 -> NO incluye x=175.
+    assert int(narrow_left[:, :, 0].max()) == 0
 
 
 def test_extract_serial_roi_drops_header() -> None:
@@ -188,6 +229,15 @@ def test_build_variants_all_six_and_upscales() -> None:
     original = dict(variants)["original"]
     assert original.shape[0] == 60  # 20 * 3 (upscale)
     assert original.shape[1] == 180  # 60 * 3
+
+
+def test_build_variants_includes_thin_stroke_variants() -> None:
+    crop = np.zeros((20, 60, 3), dtype=np.uint8)
+    variants = _engine()._build_variants(crop, ("soft_threshold", "clahe_sharpen"))
+    assert [name for name, _ in variants] == ["soft_threshold", "clahe_sharpen"]
+    for _name, image in variants:
+        assert isinstance(image, np.ndarray)
+        assert image.size > 0
 
 
 def test_crop_bbox_padded_returns_region_for_valid_bbox() -> None:
@@ -279,3 +329,31 @@ def test_read_plate_rejects_header_only_frame() -> None:
     assert result.best_raw_text is None
     assert result.best_normalized_text is None
     assert any(r["text"] == "DOMIN" for r in result.candidate_rejections)
+
+
+def test_read_plate_combines_split_fragments_into_valid_plate() -> None:
+    # EasyOCR devuelve la letra inicial separada del bloque de dígitos:
+    # ["L", "460432"] -> combinado "L460432" (sin inventar la letra).
+    frame = np.zeros((200, 400, 3), dtype=np.uint8)
+    engine = _stub_engine(
+        [
+            ("L", 0.55, 0.45, 0.85, 0.05, 0.20),
+            ("460432", 0.999, 0.45, 0.85, 0.22, 0.92),
+        ]
+    )
+    result = engine.read_plate(frame)
+
+    assert result.best_normalized_text == "L460432"
+    assert result.digit_count == 6
+    # El texto crudo conserva ambos fragmentos (no se inventó la "L").
+    assert "L" in result.best_raw_text and "460432" in result.best_raw_text
+
+
+def test_read_plate_does_not_invent_missing_letter() -> None:
+    # Si OCR solo lee "460432" (sin fragmento de letra), NO se infiere "L460432".
+    frame = np.zeros((200, 400, 3), dtype=np.uint8)
+    engine = _stub_engine([("460432", 0.999, 0.45, 0.85, 0.10, 0.90)])
+    result = engine.read_plate(frame)
+
+    assert result.best_normalized_text == "460432"  # tal cual lo leyó el OCR
+    # El servicio luego lo marcará FORMAT_MISMATCH; el motor no autocompleta.

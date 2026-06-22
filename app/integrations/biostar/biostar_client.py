@@ -14,6 +14,7 @@ desactivación de verificación SSL viene solo por configuración explícita.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import requests
@@ -25,6 +26,7 @@ from app.core.errors import (
     BioStarError,
     BioStarUserNotFoundError,
 )
+from app.integrations.biostar import biostar_events
 
 
 class BioStarClient:
@@ -96,9 +98,16 @@ class BioStarClient:
 
     # ---- operaciones ----
 
-    def get_users(self, limit: int = 100) -> list[dict[str, Any]]:
-        data = self._get("/api/users", params={"limit": limit})
+    def get_users(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        data = self._get("/api/users", params={"limit": limit, "offset": offset})
         return data.get("UserCollection", {}).get("rows", [])
+
+    def get_users_total(self) -> int:
+        data = self._get("/api/users", params={"limit": 1, "offset": 0})
+        try:
+            return int(data.get("UserCollection", {}).get("total", 0))
+        except (TypeError, ValueError):
+            return 0
 
     def get_user_detail(self, user_id: str) -> dict[str, Any]:
         data = self._get(f"/api/users/{user_id}")
@@ -109,9 +118,87 @@ class BioStarClient:
 
     def get_devices(self) -> list[dict[str, Any]]:
         data = self._get("/api/devices")
-        return data.get("DeviceCollection", {}).get("rows", [])
+        devices = data.get("DeviceCollection", {}).get("rows", [])
+        # Resuelve la IP desde el nombre cuando el campo `ip` viene vacío.
+        for device in devices:
+            if not device.get("ip"):
+                resolved = biostar_events.resolve_device_ip(device)
+                if resolved:
+                    device["resolved_ip"] = resolved
+                    device["ip"] = resolved
+        return devices
+
+    def get_recent_events(
+        self,
+        limit: int = 20,
+        device_id: Optional[str] = None,
+        hours_back: int = 24,
+    ) -> list[dict[str, Any]]:
+        """Lee eventos recientes vía POST /api/events/search.
+
+        Algunas versiones usan la columna ``device_id.id`` y otras ``device_id``;
+        se intenta la primera y, si falla con el filtro de dispositivo, la segunda.
+        """
+        response = self._search_events(limit, device_id, "device_id.id", hours_back)
+        if response.status_code >= 400 and device_id:
+            response = self._search_events(limit, device_id, "device_id", hours_back)
+
+        if response.status_code == 401:
+            raise BioStarAuthenticationError("Sesión BioStar expirada")
+        if response.status_code == 403:
+            logger.warning(
+                "BioStar rechazó la lectura de eventos (403); ¿rol sin permiso de logs?"
+            )
+            return []
+        if response.status_code >= 400:
+            raise BioStarError(
+                f"BioStar events/search -> {response.status_code}: {response.text[:200]}"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise BioStarError("Respuesta no-JSON en events/search") from exc
+        return data.get("EventCollection", {}).get("rows", [])
 
     # ---- helpers ----
+
+    def _search_events(
+        self,
+        limit: int,
+        device_id: Optional[str],
+        device_column: str,
+        hours_back: int,
+    ) -> requests.Response:
+        if not self._session:
+            raise BioStarError("BioStarClient no autenticado; llama a login() primero")
+
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(hours=hours_back)
+        conditions: list[dict[str, Any]] = [
+            {
+                "column": "datetime",
+                "operator": 3,
+                "values": [_iso_utc(start_time), _iso_utc(end_time)],
+            }
+        ]
+        if device_id:
+            conditions.append({"column": device_column, "operator": 0, "values": [str(device_id)]})
+
+        payload = {
+            "Query": {
+                "limit": limit,
+                "conditions": conditions,
+                "orders": [{"column": "datetime", "descending": True}],
+            }
+        }
+        try:
+            return self._session.post(
+                f"{self._base_url}/api/events/search", json=payload, timeout=self._timeout
+            )
+        except requests.Timeout as exc:
+            raise BioStarError("Timeout en events/search") from exc
+        except requests.RequestException as exc:
+            raise BioStarError(f"Error de red en events/search: {exc}") from exc
 
     def _get(self, path: str, params: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         if not self._session:
@@ -120,6 +207,8 @@ class BioStarClient:
         url = f"{self._base_url}{path}"
         try:
             response = self._session.get(url, params=params, timeout=self._timeout)
+        except requests.Timeout as exc:
+            raise BioStarError(f"Timeout en {path}") from exc
         except requests.RequestException as exc:
             raise BioStarError(f"Error de red en {path}: {exc}") from exc
 
@@ -134,3 +223,7 @@ class BioStarClient:
             return response.json()
         except ValueError as exc:
             raise BioStarError(f"Respuesta no-JSON en {path}") from exc
+
+
+def _iso_utc(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")

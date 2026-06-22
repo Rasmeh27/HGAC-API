@@ -17,6 +17,7 @@ from app.api.routes import (
     camera_routes,
     crossing_routes,
     health_routes,
+    integrations_routes,
     lpr_reads_routes,
     lpr_routes,
     monitor_routes,
@@ -57,6 +58,7 @@ def create_app() -> FastAPI:
     app.include_router(rntt_routes.router)
     app.include_router(crossing_routes.router)
     app.include_router(camera_routes.router)
+    app.include_router(integrations_routes.router)
 
     _mount_evidence_static(app, settings)
     _register_exception_handlers(app)
