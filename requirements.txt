@@ -18,3 +18,10 @@ pytest==8.3.4
 pytest-asyncio==0.25.0
 ruff==0.8.4
 black==24.10.0
+
+# --- LPR opcional: motor alternativo SimpleLPR ---
+# Dependencia OPCIONAL y comercial (trial 60 días). Instálala SOLO si vas a usar
+# LPR_ENGINE=simplelpr_rd_poc. El backend arranca sin ella con el motor por
+# defecto (opencv_easyocr_poc). Requiere Python >=3.10,<3.15.
+#   pip install SimpleLPR
+# SimpleLPR==3.6.3

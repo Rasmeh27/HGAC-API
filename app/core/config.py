@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # distinta del legacy `lpr_min_confidence` (0-1) de /lpr/read; son settings
     # separados a propósito para no romper el endpoint antiguo.
     lpr_enabled: bool = True
+    # Motor LPR activo. Valores soportados:
+    #   - opencv_easyocr_poc : motor propio OpenCV + EasyOCR (por defecto).
+    #   - simplelpr_rd_poc   : motor alternativo SimpleLPR (dependencia opcional).
+    # El valor se valida en la factory (`_build_lpr_engine`), no aquí, para dar
+    # un error claro sin impedir el arranque por una validación de Settings.
     lpr_engine: str = "opencv_easyocr_poc"
     # Escala 0-100; validado para evitar confundirlo con el legacy (0-1).
     lpr_read_min_confidence: float = Field(default=70.0, ge=0, le=100)
@@ -89,6 +94,41 @@ class Settings(BaseSettings):
     lpr_ambiguous_min_score_delta: float = 15.0
     # Preparado para exigir confirmación multi-frame (aún no implementado).
     lpr_require_multiframe_confirmation: bool = False
+
+    # --- LPR: motor alternativo SimpleLPR (RD por países vecinos) ---
+    # SimpleLPR no tiene plantilla de República Dominicana; se activan países de
+    # alfabeto latino vecinos SOLO para habilitar OCR alfanumérico. La AUTORIDAD
+    # de formato sigue siendo el catálogo dominicano del backend, no estos países.
+    # SimpleLPR es dependencia OPCIONAL: solo se importa si lpr_engine es
+    # `simplelpr_rd_poc` (import perezoso en el engine/factory).
+    simple_lpr_enabled: bool = True
+    # CSV de países a activar por índice o nombre (19=Colombia, 74=Puerto Rico, 96=Venezuela).
+    simple_lpr_countries: str = "19,74,96"
+    # Ruta opcional al archivo de licencia (.xml). Vacío = modo evaluación (60 días).
+    simple_lpr_product_key_path: str = ""
+    # Confianza mínima (escala 0-100) para que un match OCR de SimpleLPR se considere.
+    simple_lpr_min_confidence: float = Field(default=55.0, ge=0, le=100)
+    # GPU/CPU. cuda_device_id=-1 y use_gpu=false => CPU. max_concurrent_ops=0 => auto.
+    simple_lpr_use_gpu: bool = False
+    simple_lpr_cuda_device_id: int = -1
+    simple_lpr_max_concurrent_ops: int = 0
+    # Detección/recorte de región de placa por SimpleLPR (si el binding lo soporta).
+    simple_lpr_plate_region_detection: bool = True
+    simple_lpr_crop_to_plate_region: bool = False
+    # Corrección OCR posicional (RD): nº máximo de sustituciones letra<->dígito antes
+    # de penalizar fuerte la confianza, y penalización por sustitución (escala 0-100).
+    # Evita aceptar como definitiva una placa que solo "cuadra" tras demasiados cambios.
+    simple_lpr_max_ocr_substitutions: int = 2
+    simple_lpr_substitution_penalty: float = 12.0
+    # Tracker multi-frame de SimpleLPR. NO usado en la integración v1 (un frame por
+    # request; el consenso vive en LprService). Reservado para una mejora posterior.
+    simple_lpr_trigger_window_seconds: float = 3.0
+    simple_lpr_max_idle_seconds: float = 2.0
+    simple_lpr_min_trigger_frame_count: int = 3
+    simple_lpr_thumbnail_width: int = 256
+    simple_lpr_thumbnail_height: int = 128
+    # Modo de fallback de país (documental): de momento solo `latin_neighbors`.
+    simple_lpr_country_fallback_mode: str = "latin_neighbors"
 
     # --- Cámara ---
     camera_provider: Literal["webcam", "rtsp"] = "webcam"

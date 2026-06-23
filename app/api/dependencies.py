@@ -28,6 +28,7 @@ from app.integrations.camera.camera_provider import StreamOptions
 from app.integrations.lpr.lpr_engine import LprEngine
 from app.integrations.lpr.opencv_easyocr_lpr_engine import OpenCvEasyOcrLprEngine
 from app.integrations.lpr.opencv_plate_detector import OpenCvPlateDetector
+from app.integrations.lpr.simple_lpr_engine import SimpleLprConfig, SimpleLprEngine
 from app.modules.camera.camera_registry import CameraRegistry
 from app.modules.camera.camera_service import CameraService, build_provider_for_camera
 from app.modules.camera.camera_stream_manager import CameraStreamManager
@@ -169,10 +170,20 @@ def camera_service_provider() -> CameraService:
 
 
 def _build_lpr_engine(
-    settings: Settings, formats: tuple[PlateFormat, ...]
+    settings: Settings,
+    formats: tuple[PlateFormat, ...],
+    validator: PlateValidator,
+    catalog: DominicanPlatePatternCatalog | None,
 ) -> LprEngine:
-    """Selecciona el motor LPR. Hoy solo el PoC OpenCV+EasyOCR; el contrato
-    `LprEngine` permite añadir otros sin tocar el servicio."""
+    """Selecciona el motor LPR según `LPR_ENGINE`.
+
+    - `opencv_easyocr_poc`: motor propio OpenCV + EasyOCR (por defecto).
+    - `simplelpr_rd_poc`: motor alternativo SimpleLPR (dependencia opcional; se
+      importa de forma perezosa al construir el motor). Si SimpleLPR no está
+      instalado, `SimpleLprEngine` lanza `LprError` (se traduce a 503 en el
+      provider). El catálogo dominicano sigue siendo la autoridad de formato.
+    - Cualquier otro valor -> error claro.
+    """
     if settings.lpr_engine == "opencv_easyocr_poc":
         return OpenCvEasyOcrLprEngine(
             detector=OpenCvPlateDetector(),
@@ -188,6 +199,28 @@ def _build_lpr_engine(
             pad_right_ratio=settings.lpr_pad_right_ratio,
             pad_y_ratio=settings.lpr_pad_y_ratio,
         )
+    if settings.lpr_engine == "simplelpr_rd_poc":
+        countries = tuple(
+            token.strip()
+            for token in settings.simple_lpr_countries.split(",")
+            if token.strip()
+        )
+        return SimpleLprEngine(
+            config=SimpleLprConfig(
+                countries=countries,
+                product_key_path=settings.simple_lpr_product_key_path,
+                min_confidence=settings.simple_lpr_min_confidence,
+                use_gpu=settings.simple_lpr_use_gpu,
+                cuda_device_id=settings.simple_lpr_cuda_device_id,
+                max_concurrent_ops=settings.simple_lpr_max_concurrent_ops,
+                plate_region_detection=settings.simple_lpr_plate_region_detection,
+                crop_to_plate_region=settings.simple_lpr_crop_to_plate_region,
+                max_substitutions=settings.simple_lpr_max_ocr_substitutions,
+                substitution_penalty=settings.simple_lpr_substitution_penalty,
+            ),
+            catalog=catalog,
+            validator=validator,
+        )
     raise ValueError(f"LPR engine no soportado: {settings.lpr_engine}")
 
 
@@ -202,19 +235,20 @@ def _cached_lpr_read_service() -> LprReadService:
         if settings.lpr_enable_dominican_plate_catalog
         else None
     )
+    validator = PlateValidator(
+        formats=formats,
+        min_length=settings.local_lpr_min_text_length,
+        max_length=settings.local_lpr_max_text_length,
+    )
     return LprReadService(
         camera_service=_cached_camera_service(),
-        engine=_build_lpr_engine(settings, formats),
+        engine=_build_lpr_engine(settings, formats, validator, catalog),
         storage=LprResultStorage(
             base_path=settings.lpr_evidence_base_path,
             public_base_url=settings.evidence_public_base_url,
         ),
         normalizer=PlateNormalizer(),
-        validator=PlateValidator(
-            formats=formats,
-            min_length=settings.local_lpr_min_text_length,
-            max_length=settings.local_lpr_max_text_length,
-        ),
+        validator=validator,
         min_confidence=settings.lpr_read_min_confidence,
         max_processing_ms=settings.lpr_max_processing_ms,
         catalog=catalog,
@@ -225,4 +259,7 @@ def _cached_lpr_read_service() -> LprReadService:
 
 
 def lpr_read_service_provider() -> LprReadService:
-    return _cached_lpr_read_service()
+    # Si el motor seleccionado es SimpleLPR y el paquete no está instalado (o un
+    # país es inválido), `SimpleLprEngine` lanza `LprError` (IntegrationError);
+    # lo traducimos a 503 con mensaje claro en vez de un 500 opaco.
+    return _build_or_503(_cached_lpr_read_service, "LPR")

@@ -28,7 +28,9 @@ from app.integrations.camera.camera_provider import (
     StreamOptions,
 )
 from app.integrations.lpr.lpr_engine import LprEngine, LprEngineResult
+from app.integrations.lpr.simple_lpr_engine import SimpleLprConfig, SimpleLprEngine
 from app.main import app
+from app.modules.lpr.domain.plate_pattern_catalog import DominicanPlatePatternCatalog
 from app.modules.camera.camera_registry import CameraRegistry
 from app.modules.camera.camera_service import CameraService
 from app.modules.camera.camera_stream_manager import CameraStreamManager
@@ -37,6 +39,7 @@ from app.modules.lpr.lpr_result_storage import LprResultStorage
 from app.modules.lpr.lpr_service import LprService
 from app.modules.lpr.plate_normalizer import PlateNormalizer
 from app.modules.lpr.plate_validator import PlateFormat, PlateValidator
+from tests._simplelpr_fakes import build_fake_simplelpr
 
 TWO_LETTERS_5_DIGITS = (
     PlateFormat(name="TWO_LETTERS_5_DIGITS", regex=r"^[A-Z]{2}[0-9]{5}$"),
@@ -448,3 +451,45 @@ def test_disabled_module_returns_503(lpr_env) -> None:
         assert "disabled" in response.json()["detail"].lower()
     finally:
         app.dependency_overrides.pop(settings_provider, None)
+
+
+# --- Motor SimpleLPR a través del endpoint (con `simplelpr` falso) ---
+# Mismo contrato que el motor OpenCV: el frame lo entrega CameraService, el engine
+# devuelve el mejor candidato y el servicio decide/valida con el catálogo/validador.
+
+
+def _simplelpr_engine(match_specs, countries=("19", "74", "96")) -> SimpleLprEngine:
+    return SimpleLprEngine(
+        config=SimpleLprConfig(countries=countries),
+        catalog=DominicanPlatePatternCatalog(),
+        simplelpr_module=build_fake_simplelpr(match_specs),
+    )
+
+
+def test_endpoint_with_simplelpr_engine_corrects_and_detects(lpr_env) -> None:
+    # SimpleLPR "lee" 0F00105; el engine corrige a OF00105 (1 sustitución) y el
+    # endpoint lo acepta. El motor se reporta como simplelpr_rd_poc.
+    lpr_env(_simplelpr_engine([("0F00105", 0.92, "PR")]), formats=TWO_LETTERS_5_DIGITS)
+
+    body = client.post(READS_URL, json=_payload()).json()
+    assert body["engine"] == "simplelpr_rd_poc"
+    assert body["status"] == "PLATE_DETECTED"
+    assert body["plate"] == "OF00105"
+    assert body["plate_normalized"] == "OF00105"
+    assert body["format_valid"] is True
+    # El OCR crudo queda trazable en los candidatos (no se pierde).
+    ocr_texts = {score.get("ocr_text") for score in body["candidate_scores"]}
+    assert "0F00105" in ocr_texts
+
+
+def test_endpoint_with_simplelpr_engine_numeric_only_is_format_mismatch(lpr_env) -> None:
+    # Lectura solo numérica: el catálogo dominicano (no los países vecinos) manda
+    # y la rechaza como placa válida.
+    lpr_env(_simplelpr_engine([("460432", 0.95, "CO")]), formats=TWO_LETTERS_5_DIGITS)
+
+    body = client.post(READS_URL, json=_payload()).json()
+    assert body["engine"] == "simplelpr_rd_poc"
+    assert body["status"] == "FORMAT_MISMATCH"
+    assert body["plate"] is None
+    assert body["best_raw_text"] == "460432"
+    assert body["format_valid"] is False
