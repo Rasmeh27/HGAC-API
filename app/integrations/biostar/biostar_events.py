@@ -172,6 +172,37 @@ def device_matches(device: dict[str, Any], target: str) -> bool:
     return target in (did, ip) or target in name
 
 
+def resolve_event_device(
+    event: dict[str, Any],
+    selected_device: dict[str, Any] | None = None,
+    device_target: str = "",
+) -> dict[str, str]:
+    """Completa id/name/ip de un evento usando el dispositivo seleccionado como respaldo.
+
+    BioStar a veces omite campos del dispositivo dentro del evento; cuando se
+    monitorea un lector concreto (`--device`) usamos su inventario como relleno.
+    Si `device_target` es una IPv4 y no se pudo resolver IP, se usa como último
+    recurso. Función pura: no toca red ni IO.
+    """
+    event_dev = event_device(event)
+    selected = selected_device or {}
+
+    device_id = device_value(event_dev, "id") or device_value(selected, "id")
+    device_name = device_value(event_dev, "name") or device_value(selected, "name")
+    device_ip = (
+        device_value(event_dev, "ip")
+        or resolve_device_ip(event_dev)
+        or device_value(selected, "ip")
+        or resolve_device_ip(selected)
+    )
+
+    target = str(device_target or "").strip()
+    if not device_ip and target.count(".") == 3:
+        device_ip = target
+
+    return {"id": device_id, "name": device_name, "ip": device_ip}
+
+
 # ---- clasificación de eventos ----
 
 

@@ -272,6 +272,25 @@ class BioStarService:
 
     # ---- sesión ----
 
+    def connect(self) -> None:
+        """Abre sesión BioStar explícitamente (login).
+
+        Las operaciones (`get_devices`, `get_recent_events`, ...) ya garantizan
+        sesión de forma perezosa vía `_call`; este método existe para que un
+        consumidor de larga duración (p.ej. el monitor local) pueda fallar
+        temprano con un error claro si BioStar no está disponible.
+        """
+        self._ensure_session()
+
+    def close(self) -> None:
+        """Cierra la sesión BioStar si estaba abierta (idempotente)."""
+        if not self._logged_in:
+            return
+        try:
+            self._client.logout()
+        finally:
+            self._logged_in = False
+
     def _ensure_session(self) -> None:
         if not self._logged_in:
             self._client.login()

@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     biostar_local_scheme: Literal["http", "https"] = "https"
     biostar_local_user: str = ""
     biostar_local_password: str = ""
+    # Archivo JSON donde el monitor local publica el último evento y que el
+    # endpoint GET /biostar/events/latest expone a Ignition u otros consumidores.
+    biostar_local_output_path: str = "C:/Users/Public/hgac_biostar_local.json"
 
     # --- RNTT (portal/stub legacy; alimenta /crossing/evaluate) ---
     rntt_portal_url: str = ""

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.errors import BioStarDeviceNotFoundError
+from app.integrations.biostar import biostar_events
 from app.integrations.biostar.biostar_service import BioStarService
 
 _DEVICE = {"id": "10", "name": "Gate Lane1", "ip": "172.17.110.49"}
@@ -129,3 +130,39 @@ def test_usuario_no_en_cache_se_marca_visible() -> None:
     assert result.estado == "NO_ENCONTRADO_EN_CACHE"
     assert result.permitir_paso is True
     assert result.credentials.has_face is True
+
+
+# ---- helpers reutilizados por el monitor local ----
+
+
+def test_resolve_event_device_usa_dispositivo_seleccionado_como_respaldo() -> None:
+    # El evento solo trae el id; name/ip se completan desde el lector seleccionado.
+    event = {"device": {"id": "10"}}
+    resolved = biostar_events.resolve_event_device(event, _DEVICE, "Gate Lane1")
+    assert resolved == {"id": "10", "name": "Gate Lane1", "ip": "172.17.110.49"}
+
+
+def test_resolve_event_device_ip_desde_target_ipv4() -> None:
+    # Cuando --device es una IP y el evento no trae IP, se usa como último recurso.
+    event = {"device": {"id": "10", "name": "Lector"}}
+    resolved = biostar_events.resolve_event_device(event, None, "172.17.110.49")
+    assert resolved["ip"] == "172.17.110.49"
+    assert resolved["id"] == "10"
+
+
+def test_device_matches_por_id_ip_y_nombre() -> None:
+    assert biostar_events.device_matches(_DEVICE, "10") is True
+    assert biostar_events.device_matches(_DEVICE, "172.17.110.49") is True
+    assert biostar_events.device_matches(_DEVICE, "lane1") is True
+    assert biostar_events.device_matches(_DEVICE, "99") is False
+
+
+def test_event_key_evita_reprocesar_linea_base() -> None:
+    event = _event("4102", "1:1 authentication succeeded (Card)")
+    baseline = {biostar_events.event_key(e) for e in [event]}
+
+    # El mismo evento ya está en la línea base -> no se reprocesa.
+    assert biostar_events.event_key(event) in baseline
+    # Un evento de otro usuario es una llave nueva -> se procesa.
+    otro = _event("4102", "1:1 authentication succeeded (Card)", user_id="99")
+    assert biostar_events.event_key(otro) not in baseline
