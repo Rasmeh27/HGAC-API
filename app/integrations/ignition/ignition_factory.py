@@ -6,4 +6,7 @@ from app.integrations.ignition.ignition_json_writer import IgnitionJsonWriter
 
 def build_ignition_writer(settings: Settings | None = None) -> IgnitionJsonWriter:
     settings = settings or get_settings()
-    return IgnitionJsonWriter(output_dir=settings.ignition_json_output_dir)
+    return IgnitionJsonWriter(
+        output_dir=settings.ignition_json_output_dir,
+        lpr_latest_path=settings.ignition_lpr_latest_path,
+    )
