@@ -27,14 +27,18 @@ class PlateCandidate:
 class OpenCvPlateDetector:
     def __init__(
         self,
-        min_aspect_ratio: float = 2.0,
+        min_aspect_ratio: float = 1.5,
         max_aspect_ratio: float = 6.5,
         min_area_ratio: float = 0.001,
+        max_area_ratio: float = 0.10,
+        min_fill_ratio: float = 0.20,
         max_candidates: int = 5,
     ) -> None:
         self._min_aspect_ratio = min_aspect_ratio
         self._max_aspect_ratio = max_aspect_ratio
         self._min_area_ratio = min_area_ratio
+        self._max_area_ratio = max_area_ratio
+        self._min_fill_ratio = min_fill_ratio
         self._max_candidates = max_candidates
 
     def detect(self, frame_bgr: np.ndarray) -> list[PlateCandidate]:
@@ -59,9 +63,21 @@ class OpenCvPlateDetector:
             area = float(width * height)
             if not (self._min_aspect_ratio <= aspect_ratio <= self._max_aspect_ratio):
                 continue
-            if area < self._min_area_ratio * frame_area:
+            area_ratio = area / frame_area
+            if not (self._min_area_ratio <= area_ratio <= self._max_area_ratio):
                 continue
-            scored.append((area, PlateCandidate(x=x, y=y, width=width, height=height)))
+            fill_ratio = abs(float(cv2.contourArea(contour))) / area
+            if fill_ratio < self._min_fill_ratio:
+                continue
+            perimeter = cv2.arcLength(contour, True)
+            vertices = len(cv2.approxPolyDP(contour, 0.02 * perimeter, True))
+            quad_bonus = 30.0 if vertices == 4 else 0.0
+            aspect_score = max(0.0, 30.0 - abs(aspect_ratio - 2.0) * 12.0)
+            compactness_score = fill_ratio * 100.0
+            score = compactness_score + aspect_score + quad_bonus
+            scored.append(
+                (score, PlateCandidate(x=x, y=y, width=width, height=height))
+            )
 
         # Mayor área primero: las placas suelen ser de los rectángulos más grandes.
         scored.sort(key=lambda item: item[0], reverse=True)
