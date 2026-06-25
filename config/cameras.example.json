@@ -1,0 +1,28 @@
+{
+  "cameras": [
+    {
+      "camera_id": "P1-CARRIL-1",
+      "camera_name": "P1 - Carril 1",
+      "source_type": "rtsp",
+      "source_env": "CAMERA_P1_CARRIL_1_RTSP_URL",
+      "lpr_roi": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      }
+    },
+    {
+      "camera_id": "P1-CARRIL-2",
+      "camera_name": "P1 - Carril 2",
+      "source_type": "rtsp",
+      "source_env": "CAMERA_P1_CARRIL_2_RTSP_URL",
+      "lpr_roi": {
+        "x": 0,
+        "y": 60,
+        "width": 1450,
+        "height": 700
+      }
+    }
+  ]
+}

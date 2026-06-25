@@ -18,9 +18,11 @@ __pycache__/
 
 # Datos locales y evidencia
 data/
-evidence/snapshots/*.jpg
-evidence/lpr/frames/*.jpg
-evidence/lpr/crops/*.jpg
+evidence/
+
+# Configuración local con datos sensibles (URLs RTSP reales, etc.).
+# Versionar solo el ejemplo: config/cameras.example.json
+config/cameras.json
 
 # IDE / editores
 .vscode/

@@ -17,6 +17,7 @@ capa HTTP los mapee a 404/503; no se transforman en evidencia.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import cv2
@@ -50,6 +51,7 @@ class LprService:
         ambiguous_min_score_delta: float = 15.0,
         ambiguous_candidate_distance: int = 1,
         require_multiframe_confirmation: bool = False,
+        result_observer: Callable[[LprReadResponse], None] | None = None,
     ) -> None:
         self._camera = camera_service
         self._engine = engine
@@ -58,6 +60,10 @@ class LprService:
         self._validator = validator
         self._min_confidence = min_confidence
         self._max_processing_ms = max_processing_ms
+        # Observador opcional invocado con CADA lectura (aceptada o rechazada). Se
+        # usa para publicar el "latest" en Ignition sin acoplar el servicio al
+        # escritor concreto. Sus fallos NUNCA deben romper la respuesta LPR.
+        self._result_observer = result_observer
         # Catálogo dominicano opcional: si es None, el comportamiento es el legacy
         # (solo PlateValidator por regex). Si se inyecta, manda en format_valid y
         # aporta clasificación + detección de ambigüedad.
@@ -253,7 +259,7 @@ class LprService:
                 elapsed_ms,
                 self._max_processing_ms,
             )
-        return LprReadResponse(
+        response = LprReadResponse(
             event_id=event_id,
             camera_id=request.camera_id,
             status=status,
@@ -299,6 +305,24 @@ class LprService:
                 else (list(engine_result.candidate_scores) if engine_result else [])
             ),
         )
+        self._notify_observer(response)
+        return response
+
+    def _notify_observer(self, response: LprReadResponse) -> None:
+        """Publica la lectura al observador (p.ej. Ignition latest), si hay uno.
+
+        Aísla cualquier fallo (archivo bloqueado por Ignition, disco lleno, etc.)
+        para que la respuesta LPR se devuelva siempre.
+        """
+        if self._result_observer is None:
+            return
+        try:
+            self._result_observer(response)
+        except Exception:  # noqa: BLE001 - publicar el latest no debe romper la lectura
+            logger.exception(
+                "LPR {}: no se pudo publicar la lectura al observador",
+                response.event_id,
+            )
 
 
 def _decode_jpeg(frame_bytes: bytes) -> np.ndarray | None:

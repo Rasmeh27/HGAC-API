@@ -109,7 +109,7 @@ def _cached_camera_stream_manager() -> CameraStreamManager:
 def _cached_camera_service() -> CameraService:
     settings = get_settings()
     return CameraService(
-        registry=CameraRegistry(),
+        registry=CameraRegistry.from_json(settings.camera_registry_path),
         storage=SnapshotStorage(
             base_path=settings.evidence_base_path,
             public_base_url=settings.evidence_public_base_url,
@@ -255,6 +255,10 @@ def _cached_lpr_read_service() -> LprReadService:
         ambiguous_min_score_delta=settings.lpr_ambiguous_min_score_delta,
         ambiguous_candidate_distance=settings.lpr_ambiguous_candidate_distance,
         require_multiframe_confirmation=settings.lpr_require_multiframe_confirmation,
+        # Publica cada lectura del endpoint formal en el "latest" de Ignition
+        # (escritura atómica). Si el archivo está bloqueado, el observador lo
+        # registra sin romper la respuesta HTTP.
+        result_observer=_cached_ignition_writer().write_lpr_latest,
     )
 
 

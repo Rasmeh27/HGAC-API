@@ -39,6 +39,10 @@ class LprReadRequest(BaseModel):
 class LprReadResponse(BaseModel):
     event_id: str
     camera_id: str
+    # Identidad de la cámara (para el contrato de Ignition). Opcionales: en una
+    # lectura puntual pueden no resolverse, pero forman parte del contrato.
+    camera_name: str | None = None
+    camera_ip: str | None = None
     status: LprReadStatus
     plate: str | None = None
     plate_normalized: str | None = None
@@ -70,5 +74,10 @@ class LprReadResponse(BaseModel):
     selected_roi: str | None = None
     digit_count: int = 0
     alpha_count: int = 0
+    # Consenso temporal sobre ráfaga de frames. En la lectura de un solo frame
+    # (v1) quedan en 0; reservados para la confirmación multi-frame.
+    consensus_votes: int = 0
+    consensus_total: int = 0
+    consensus_ratio: float = 0.0
     candidate_rejections: list[dict] = Field(default_factory=list)
     candidate_scores: list[dict] = Field(default_factory=list)

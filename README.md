@@ -106,7 +106,10 @@ Todas viven en `.env`. Las principales:
 | `BIOSTAR_VERIFY_SSL` | `false` para certificados autofirmados |
 | `RNTT_USE_STUB` | `true` para usar stub (PoC inicial sin Selenium) |
 | `RNTT_PORTAL_URL` | URL del portal RNTT real |
-| `IGNITION_JSON_OUTPUT_DIR` | Carpeta donde escribir JSON para Ignition |
+| `CAMERA_REGISTRY_PATH` | Ruta del JSON de cámaras (def. `./config/cameras.json`); si no existe, se usa la webcam `CAM-P-01` |
+| `CAMERA_P1_CARRIL_1_RTSP_URL`, `CAMERA_P1_CARRIL_2_RTSP_URL` | URLs RTSP reales referenciadas por `config/cameras.json` (`source_env`). Solo en tu `.env` local |
+| `IGNITION_JSON_OUTPUT_DIR` | Carpeta donde escribir JSON de eventos para Ignition |
+| `IGNITION_LPR_LATEST_PATH` | Archivo fijo del último LPR (def. `C:/Users/Public/hgac_lpr.json`); escritura atómica |
 
 El archivo `.env.example` lista la plantilla completa.
 
@@ -142,6 +145,17 @@ Swagger está en `http://localhost:8000/docs`.
 Ignition **no** se conecta a la cámara: consume estos endpoints REST, que
 abstraen la fuente física tras un `camera_id` lógico (hoy `CAM-P-01`, webcam
 USB; preparado para migrar a RTSP/ONVIF sin cambiar el contrato).
+
+> **Registro de cámaras (`config/cameras.json`).** El catálogo de cámaras se
+> carga desde un JSON externo (`CAMERA_REGISTRY_PATH`). Parte de
+> `config/cameras.example.json` (versionado) → cópialo a `config/cameras.json`
+> (**no** se versiona). Las URLs RTSP **nunca** van en el JSON: cada cámara
+> referencia una variable de entorno con `source_env` (p.ej.
+> `CAMERA_P1_CARRIL_1_RTSP_URL`), que el backend resuelve desde tu `.env`. Si el
+> archivo no existe, el registro cae a la webcam por defecto `CAM-P-01`. La API
+> **nunca** devuelve credenciales: el campo `source` del `/status` usa
+> `safe_source`, que elimina usuario/clave de las URLs RTSP. Cada cámara puede
+> declarar además un `lpr_roi` (región de interés) para uso futuro del LPR.
 
 | Método | Ruta | Descripción |
 |---|---|---|
@@ -282,6 +296,17 @@ forma perezosa (no pesa en el arranque) y es reemplazable vía el contrato
 > El endpoint legacy `POST /lpr/read` (motor acoplado a `app/integrations/lpr`)
 > se conserva intacto; el módulo formal nuevo vive bajo `/api/v1/lpr`.
 
+**Publicación a Ignition (`hgac_lpr.json`).** Cada lectura de `/api/v1/lpr/reads`
+se publica además en el archivo "latest" que el gateway de Ignition lee en bucle
+(`IGNITION_LPR_LATEST_PATH`, def. `C:/Users/Public/hgac_lpr.json`). La escritura
+es **atómica** (archivo temporal + `replace`) para no chocar con Ignition leyendo
+el archivo. El contrato conserva las claves esperadas (`trigger`, `status`,
+`plate`, `plate_normalized`, `confidence`, `camera_id/name/ip`, `frame_path/url`,
+`crop_path/url`, `event_id`, `engine`, `plate_matched`, campos de consenso y
+`raw_result`). En lecturas no aceptadas `plate` queda vacío y `plate_matched=false`
+(no se infieren caracteres). Si el archivo está bloqueado, el fallo se registra
+**sin** romper la respuesta HTTP.
+
 ### Ejemplos rápidos
 
 ```bash
@@ -313,6 +338,31 @@ pytest -q
 ```
 
 Cubre el endpoint `/health` y todas las ramas de las reglas de cruce.
+
+---
+
+## Monitores independientes (`scripts/`)
+
+Procesos opcionales que corren **fuera** del backend (no son dependencias del
+arranque) y publican su salida para Ignition:
+
+| Script | Qué hace |
+|---|---|
+| `scripts/lpr/simplelpr_rtsp_monitor.py` | Monitor LPR continuo con **SimpleLPR + RTSP**. Publica cada placa/rótulo en `hgac_lpr.json` (mismo contrato que el endpoint formal). Dependencia **opcional/comercial**: instálala con `pip install -r scripts/lpr/requirements-simplelpr.txt` + el SDK SimpleLPR. No exige nada al backend |
+| `scripts/monitor_biostar_local.py` | Monitor del lector BioStar local; publica el último evento en `BIOSTAR_LOCAL_OUTPUT_PATH` (lo expone `GET /biostar/events/latest`) |
+| `scripts/poc_supervisor.py` | Lanza y reinicia en una sola consola los tres procesos del PoC (backend + LPR + BioStar). Toda credencial/URL viene de `.env`; el monitor BioStar solo arranca por defecto si `BIOSTAR_LOCAL_PASSWORD` está definida |
+
+```powershell
+# Monitor SimpleLPR (configura SIMPLELPR_RTSP_URL en .env primero)
+.\.venv\Scripts\python.exe .\scripts\lpr\simplelpr_rtsp_monitor.py
+
+# Supervisor del PoC completo
+.\.venv\Scripts\python.exe .\scripts\poc_supervisor.py
+```
+
+> SimpleLPR es un proveedor **alternativo/temporal**: el motor propio
+> OpenCV+EasyOCR (`/api/v1/lpr/reads`) permanece como respaldo y no depende de él.
+> Variables del monitor en `scripts/lpr/.env.example` (cópialas a tu `.env` raíz).
 
 ---
 

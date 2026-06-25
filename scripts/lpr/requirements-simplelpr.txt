@@ -1,0 +1,2 @@
+# SimpleLPR es un SDK comercial/evaluacion y se instala por separado.
+python-dotenv==1.0.1

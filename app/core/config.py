@@ -7,8 +7,16 @@ Nunca debe haber credenciales o hosts hardcodeados fuera de este módulo.
 from functools import lru_cache
 from typing import Literal
 
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Carga `.env` en `os.environ` para que componentes que leen variables por nombre
+# en tiempo de ejecución (p.ej. `CameraRegistry.from_json`, que resuelve las URLs
+# RTSP desde `source_env`) las encuentren. `pydantic-settings` ya lee `.env` para
+# poblar `Settings`, pero no exporta esas variables a `os.environ`; no sobreescribe
+# variables ya presentes en el entorno (override=False por defecto).
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -135,6 +143,9 @@ class Settings(BaseSettings):
     webcam_index: int = 0
     rtsp_url: str = ""
     camera_capture_timeout_seconds: int = 5
+    # Registro de cámaras cargado desde JSON (URLs RTSP por `source_env`, nunca
+    # versionadas). Si el archivo no existe, se usa la webcam por defecto CAM-P-01.
+    camera_registry_path: str = "./config/cameras.json"
 
     # --- Cámara: live stream MJPEG (preview en Ignition) ---
     camera_stream_fps: int = 10
@@ -210,6 +221,9 @@ class Settings(BaseSettings):
 
     # --- Ignition ---
     ignition_json_output_dir: str = "./data/ignition_outbox"
+    # Archivo fijo del último LPR que el gateway de Ignition lee en bucle. Se
+    # escribe de forma atómica (ver IgnitionJsonWriter.write_lpr_latest).
+    ignition_lpr_latest_path: str = "C:/Users/Public/hgac_lpr.json"
     ignition_base_url: str = "http://localhost:8088"
     ignition_event_endpoint: str = "/system/webdev/hgac/events/vehicle-observation"
     ignition_api_token: str = "change-me"
