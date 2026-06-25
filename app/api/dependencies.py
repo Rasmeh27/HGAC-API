@@ -109,7 +109,7 @@ def _cached_camera_stream_manager() -> CameraStreamManager:
 def _cached_camera_service() -> CameraService:
     settings = get_settings()
     return CameraService(
-        registry=CameraRegistry(),
+        registry=CameraRegistry.from_json(settings.camera_registry_path)
         storage=SnapshotStorage(
             base_path=settings.evidence_base_path,
             public_base_url=settings.evidence_public_base_url,
