@@ -16,6 +16,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # RTSP desde `source_env`) las encuentren. `pydantic-settings` ya lee `.env` para
 # poblar `Settings`, pero no exporta esas variables a `os.environ`; no sobreescribe
 # variables ya presentes en el entorno (override=False por defecto).
+
+
+# CameraRegistry resuelve variables dinámicas por cámara (source_env). Cargar el
+# archivo aquí permite que también estén disponibles mediante os.environ.
 load_dotenv()
 
 
@@ -71,12 +75,18 @@ class Settings(BaseSettings):
     # un error claro sin impedir el arranque por una validación de Settings.
     lpr_engine: str = "opencv_easyocr_poc"
     # Escala 0-100; validado para evitar confundirlo con el legacy (0-1).
-    lpr_read_min_confidence: float = Field(default=70.0, ge=0, le=100)
+    lpr_read_min_confidence: float = Field(default=55.0, ge=0, le=100)
     lpr_save_debug_frames: bool = True
-    lpr_max_processing_ms: int = 5000
+    lpr_max_processing_ms: int = 15000
+    lpr_burst_frame_count: int = Field(default=5, ge=1, le=10)
+    lpr_burst_interval_ms: int = Field(default=200, ge=0, le=2000)    
+    lpr_consensus_min_votes: int = Field(default=2, ge=1, le=10)
+    lpr_early_consensus: bool = True
+    lpr_ocr_upscale: int = Field(default=2, ge=1, le=4)
+
     lpr_evidence_base_path: str = "./evidence/lpr"
     # Modo de rendimiento del motor: fast (rápido) | balanced | exhaustive (debug).
-    lpr_mode: Literal["fast", "balanced", "exhaustive"] = "balanced"
+    lpr_mode: Literal["fast", "balanced", "exhaustive"] = "fast"
     # Mínimo de dígitos para que un candidato pueda ser placa (descarta encabezados).
     lpr_min_serial_digits: int = 3
     # Padding del recorte de placa antes del OCR. Asimétrico: más margen a la
@@ -91,6 +101,7 @@ class Settings(BaseSettings):
     # Override de regex SOLO para un nombre fuera del catálogo (vacío = catálogo).
     lpr_plate_format_regex: str = ""
     lpr_plate_expected_length: int = 7
+
 
     # --- LPR: catálogo de placas dominicanas (referencia operativa DGII) ---
     # Catálogo operativo para la PoC; NO sustituye validación futura contra
