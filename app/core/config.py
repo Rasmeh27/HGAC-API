@@ -8,7 +8,7 @@ from functools import lru_cache
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Carga `.env` en `os.environ` para que componentes que leen variables por nombre
@@ -64,14 +64,40 @@ class Settings(BaseSettings):
     # distinta del legacy `lpr_min_confidence` (0-1) de /lpr/read; son settings
     # separados a propósito para no romper el endpoint antiguo.
     lpr_enabled: bool = True
-    # Motor LPR activo. Valores soportados:
-    #   - opencv_easyocr_poc : motor propio OpenCV + EasyOCR (por defecto).
-    #   - simplelpr_rd_poc   : motor alternativo SimpleLPR (dependencia opcional).
-    # El valor se valida en la factory (`_build_lpr_engine`), no aquí, para dar
+    # Motor LPR activo. Valores soportados (alias resueltos en la factory):
+    #   - opencv_easyocr_poc / opencv_easyocr : motor propio OpenCV + EasyOCR (default).
+    #   - simplelpr_rd_poc / simplelpr        : motor SimpleLPR (dependencia opcional).
+    #   - auto                                : intenta SimpleLPR y cae a OpenCV.
+    # El valor se valida en la factory (`_build_lpr_engines`), no aquí, para dar
     # un error claro sin impedir el arranque por una validación de Settings.
     lpr_engine: str = "opencv_easyocr_poc"
-    # Escala 0-100; validado para evitar confundirlo con el legacy (0-1).
-    lpr_read_min_confidence: float = Field(default=70.0, ge=0, le=100)
+    # Motor de respaldo cuando el primario es SimpleLPR/auto y no detecta o falla
+    # de forma controlada. Vacío = sin fallback (un primario SimpleLPR ausente
+    # devolvería 503 controlado). Default: OpenCV/EasyOCR.
+    lpr_fallback_engine: str = "opencv_easyocr"
+    # Escala 0-100; validado para evitar confundirlo con el legacy (0-1). Umbral de
+    # confianza para aceptar una placa; con la ráfaga multiframe se baja respecto al
+    # single-frame porque el consenso (varios votos) compensa una confianza menor.
+    lpr_read_min_confidence: float = Field(default=55.0, ge=0, le=100)
+
+    # --- LPR: ráfaga multiframe + consenso (placas en movimiento) ---
+    # Se captura una ráfaga por lectura; se puntúa la calidad del ROI de cada frame,
+    # se procesan los mejores y se vota por consenso. count/interval cubren ~1-2 s de
+    # paso del vehículo. count=1 => comportamiento single-frame (compatibilidad).
+    lpr_burst_frame_count: int = Field(default=12, ge=1, le=30)
+    lpr_burst_interval_ms: int = Field(default=120, ge=0)
+    lpr_burst_top_frames: int = Field(default=5, ge=1)
+    # Umbrales de calidad del ROI de placa (Laplaciano y brillo 0-255).
+    lpr_min_frame_sharpness: float = 80.0
+    lpr_min_frame_brightness: float = 30.0
+    lpr_max_frame_brightness: float = 235.0
+    # Consenso: votos mínimos (frames distintos con la misma placa) y confianza para
+    # aceptar una placa válida vista en un solo frame.
+    lpr_consensus_min_votes: int = Field(default=2, ge=1)
+    lpr_single_frame_accept_confidence: float = Field(default=75.0, ge=0, le=100)
+    # Guardar los top frames de la ráfaga como evidencia (burst_frame_urls). Off por
+    # defecto para no llenar evidence/ con archivos.
+    lpr_save_burst_frames: bool = False
     lpr_save_debug_frames: bool = True
     lpr_max_processing_ms: int = 5000
     lpr_evidence_base_path: str = "./evidence/lpr"
@@ -103,18 +129,52 @@ class Settings(BaseSettings):
     # Preparado para exigir confirmación multi-frame (aún no implementado).
     lpr_require_multiframe_confirmation: bool = False
 
+    # --- LPR: evidencia de depuración (recortes de ROI + overlay) ---
+    # Guarda recorte del ROI de placa, del ROI de rótulo y un overlay del frame con
+    # los recuadros, para CALIBRAR el encuadre desde Ignition. Solo se escribe si la
+    # cámara tiene algún ROI configurado; nunca rompe la respuesta.
+    lpr_save_debug_evidence: bool = True
+    lpr_evidence_jpeg_quality: int = Field(default=90, ge=40, le=100)
+
+    # --- LPR: lectura de RÓTULO de camión (identificador corto pintado) ---
+    # Independiente de la placa: usa `rotulo_roi` de la cámara, un validador propio
+    # (LETTER_3_DIGITS, p.ej. E204) y el motor OpenCV/EasyOCR (SimpleLPR es para
+    # placas). Si la cámara no define `rotulo_roi`, no se intenta leer rótulo.
+    lpr_rotulo_enabled: bool = True
+    # CSV de formatos de rótulo del catálogo (vacío = LETTER_3_DIGITS + LETTERS_2_4_DIGITS).
+    lpr_rotulo_format_name: str = ""
+    lpr_rotulo_read_min_confidence: float = Field(default=60.0, ge=0, le=100)
+    lpr_rotulo_min_text_length: int = 3
+    lpr_rotulo_max_text_length: int = 6
+    lpr_rotulo_min_serial_digits: int = 2
+
     # --- LPR: motor alternativo SimpleLPR (RD por países vecinos) ---
     # SimpleLPR no tiene plantilla de República Dominicana; se activan países de
     # alfabeto latino vecinos SOLO para habilitar OCR alfanumérico. La AUTORIDAD
     # de formato sigue siendo el catálogo dominicano del backend, no estos países.
     # SimpleLPR es dependencia OPCIONAL: solo se importa si lpr_engine es
     # `simplelpr_rd_poc` (import perezoso en el engine/factory).
-    simple_lpr_enabled: bool = True
+    # Acepta también los nombres de entorno del spec (SIMPLELPR_*) además de los
+    # SIMPLE_LPR_* históricos, vía AliasChoices.
+    simple_lpr_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("simple_lpr_enabled", "simplelpr_enabled"),
+    )
     # CSV de países a activar por índice o nombre (19=Colombia, 74=Puerto Rico, 96=Venezuela).
-    simple_lpr_countries: str = "19,74,96"
+    simple_lpr_countries: str = Field(
+        default="19,74,96",
+        validation_alias=AliasChoices("simple_lpr_countries", "simplelpr_country_codes"),
+    )
     # Ruta opcional al archivo de licencia (.xml). Vacío = modo evaluación (60 días).
-    simple_lpr_product_key_path: str = ""
+    simple_lpr_product_key_path: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "simple_lpr_product_key_path", "simplelpr_license_path"
+        ),
+    )
     # Confianza mínima (escala 0-100) para que un match OCR de SimpleLPR se considere.
+    # OJO: sin alias SIMPLELPR_MIN_CONFIDENCE a propósito: ese nombre ya lo usa el
+    # monitor SimpleLPR continuo en escala 0-1; usar SIMPLE_LPR_MIN_CONFIDENCE aquí.
     simple_lpr_min_confidence: float = Field(default=55.0, ge=0, le=100)
     # GPU/CPU. cuda_device_id=-1 y use_gpu=false => CPU. max_concurrent_ops=0 => auto.
     simple_lpr_use_gpu: bool = False
@@ -187,9 +247,13 @@ class Settings(BaseSettings):
     rntt_use_stub: bool = True
 
     # --- RNTT API ASMX (consulta real chofer/camión) ---
+    # OBLIGATORIOS: el WebService exige autenticación (sin credenciales responde
+    # "No tiene acceso a este servicio"). Si falta cualquiera, los endpoints de
+    # integración RNTT devuelven 503 (configuración incompleta).
     rntt_base_url: str = ""
     rntt_username: str = ""
     rntt_password: str = ""
+    # `rntt_timeout_seconds` (sección legacy arriba) es opcional; default 30.
     # Modo de autenticación confirmado en producción: headers Username/Password.
     # `hmac` arma Username/Time/Token = HMAC_SHA256(user+time, key=password).
     rntt_auth_mode: Literal["header", "hmac"] = "header"

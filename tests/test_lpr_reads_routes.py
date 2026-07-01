@@ -229,6 +229,8 @@ def test_plate_detected_returns_structured_result(lpr_env) -> None:
     assert body["ocr_attempt_count"] == 6
     assert body["preprocessing_variant"] == "grayscale"
     assert body["crop_saved"] is True
+    # La cámara default (CAM-P-01) no define lpr_roi: el OCR usó el frame completo.
+    assert body["camera_roi"] is None
 
     # URL pública (usa el segmento "lpr", estable) y ruta normalizada con "/".
     frame_name = body["source_frame_url"].rsplit("/", 1)[-1]
@@ -251,6 +253,36 @@ def test_plate_detected_returns_structured_result(lpr_env) -> None:
 
 
 # --- Formato TWO_LETTERS_5_DIGITS (placa tipo OF00105) ---
+
+
+def test_response_keeps_legacy_fields_and_adds_extended_contract(lpr_env) -> None:
+    # Ignition depende de los campos legacy; el contrato extendido es ADITIVO.
+    lpr_env(_FakeEngine(raw_text="L460432", confidence=88.0, crop=_SAMPLE_JPEG))
+    body = client.post(READS_URL, json=_payload()).json()
+
+    # Legacy (no deben desaparecer).
+    for legacy in (
+        "plate", "plate_normalized", "confidence", "status", "source_frame_url",
+        "plate_crop_url", "camera_roi", "candidate_count", "ocr_attempt_count",
+        "best_raw_text", "best_normalized_text", "format_valid", "rejection_reason",
+        "engine",
+    ):
+        assert legacy in body, f"falta campo legacy {legacy}"
+
+    # Extendido (nuevo).
+    assert body["plate_status"] == "PLATE_DETECTED"
+    assert body["plate_engine"] == "opencv_easyocr_poc"
+    assert isinstance(body["plate_candidates"], list)
+    assert isinstance(body["engine_attempts"], list)
+    assert body["engine_attempts"][0]["engine"] == "opencv_easyocr_poc"
+    assert body["engine_attempts"][0]["status"] == "OK"
+    # Sin rotulo_roi en la cámara default -> rótulo NOT_CONFIGURED.
+    assert body["rotulo_status"] == "NOT_CONFIGURED"
+    assert body["rotulo"] is None
+    assert body["debug_frame_url"] == body["source_frame_url"]
+    # Sin ROI configurado, no se genera evidencia de recorte/overlay.
+    assert body["plate_roi_url"] is None
+    assert body["roi_overlay_url"] is None
 
 
 def test_two_letters_format_accepts_serial(lpr_env) -> None:

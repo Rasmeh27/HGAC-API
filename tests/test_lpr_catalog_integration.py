@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from app.integrations.lpr.lpr_engine import LprEngine, LprEngineResult
+from app.modules.camera.camera_registry import CameraConfig
 from app.modules.lpr.domain.plate_pattern_catalog import DominicanPlatePatternCatalog
 from app.modules.lpr.lpr_models import LprReadRequest, LprReadStatus
 from app.modules.lpr.lpr_result_storage import LprResultStorage
@@ -26,10 +27,19 @@ _CLEAN = re.compile(r"[^A-Z0-9]")
 
 
 class _FakeCamera:
-    """Solo implementa lo que usa LprService: capture_current_frame."""
+    """Solo implementa lo que usa LprService: capture_current_frame + get_config."""
 
     def capture_current_frame(self, camera_id: str) -> bytes:
         return _SAMPLE_JPEG
+
+    def get_config(self, camera_id: str) -> CameraConfig:
+        # Sin lpr_roi: el OCR usa el frame completo (comportamiento legacy).
+        return CameraConfig(
+            camera_id=camera_id,
+            camera_name=camera_id,
+            source_type="rtsp",
+            source="",
+        )
 
 
 class _FakeEngine(LprEngine):

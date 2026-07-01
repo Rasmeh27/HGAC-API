@@ -8,6 +8,19 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+class CameraRoi(BaseModel):
+    """Región de interés (en píxeles del frame completo) aplicada antes del OCR.
+
+    Refleja el ROI REALMENTE recortado: si el ROI configurado se sale del frame,
+    estos valores vienen acotados a los límites de la imagen.
+    """
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
 class LprReadStatus(str, Enum):
     PLATE_DETECTED = "PLATE_DETECTED"
     NO_PLATE_DETECTED = "NO_PLATE_DETECTED"
@@ -16,7 +29,57 @@ class LprReadStatus(str, Enum):
     # Dos candidatos válidos casi idénticos (difieren en un carácter) con scores
     # cercanos: no se acepta automáticamente, requiere más evidencia.
     AMBIGUOUS_READ = "AMBIGUOUS_READ"
+    # Ráfaga multiframe sin ningún frame utilizable (todos borrosos/quemados):
+    # no se pudo intentar una lectura confiable.
+    BLURRY_FRAME = "BLURRY_FRAME"
     ERROR = "ERROR"
+
+
+class RotuloReadStatus(str, Enum):
+    """Estado de la lectura de RÓTULO (independiente del de placa)."""
+
+    ROTULO_DETECTED = "ROTULO_DETECTED"
+    NO_ROTULO_DETECTED = "NO_ROTULO_DETECTED"
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"
+    FORMAT_MISMATCH = "FORMAT_MISMATCH"
+    ERROR = "ERROR"
+    # La cámara no tiene rotulo_roi configurado: no se intentó leer rótulo.
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+
+
+class PlateCandidate(BaseModel):
+    """Candidato OCR crudo/normalizado, expuesto AUNQUE sea rechazado.
+
+    Permite depurar qué leyó el motor (SimpleLPR o EasyOCR) aunque no haya una
+    placa/rótulo aceptado. `bbox` es opcional (lo aporta SimpleLPR si detecta
+    región); `rejection_reason` indica por qué no se aceptó.
+    """
+
+    engine: str
+    raw_text: str | None = None
+    normalized_text: str | None = None
+    confidence: float = 0.0
+    format_valid: bool = False
+    bbox: CameraRoi | None = None
+    source: str | None = None
+    substitutions: int | None = None
+    rejection_reason: str | None = None
+    # --- Trazabilidad multiframe (null en lectura de un solo frame) ---
+    frame_index: int | None = None
+    frame_quality_score: float | None = None
+    sharpness: float | None = None
+    brightness: float | None = None
+
+
+class EngineAttempt(BaseModel):
+    """Intento de un motor en una lectura (para trazar auto/fallback).
+
+    status: OK | NO_DETECTION | ERROR | NOT_USED | UNAVAILABLE.
+    """
+
+    engine: str
+    status: str
+    error: str | None = None
 
 
 class LprReadRequest(BaseModel):
@@ -72,6 +135,10 @@ class LprReadResponse(BaseModel):
     preprocessing_variant: str | None = None
     crop_saved: bool = False
     selected_roi: str | None = None
+    # ROI de la cámara (config) recortado del frame antes de correr el OCR. Null
+    # cuando la cámara no define ROI: en ese caso el OCR usó el frame completo.
+    # No confundir con `selected_roi`, que es la región interna que elige el motor.
+    camera_roi: CameraRoi | None = None
     digit_count: int = 0
     alpha_count: int = 0
     # Consenso temporal sobre ráfaga de frames. En la lectura de un solo frame
@@ -81,3 +148,45 @@ class LprReadResponse(BaseModel):
     consensus_ratio: float = 0.0
     candidate_rejections: list[dict] = Field(default_factory=list)
     candidate_scores: list[dict] = Field(default_factory=list)
+
+    # ===================================================================
+    # Contrato EXTENDIDO (placa + rótulo + multi-motor + evidencia debug).
+    # Todos los campos legacy de arriba SE MANTIENEN para no romper Ignition;
+    # estos son aditivos y opcionales.
+    # ===================================================================
+
+    # --- Placa (espejo estructurado de los campos legacy de placa) ---
+    plate_status: LprReadStatus | None = None
+    plate_engine: str | None = None
+    plate_candidates: list[PlateCandidate] = Field(default_factory=list)
+
+    # --- Rótulo de camión (lectura independiente sobre rotulo_roi) ---
+    rotulo: str | None = None
+    rotulo_normalized: str | None = None
+    rotulo_confidence: float = 0.0
+    rotulo_status: RotuloReadStatus | None = None
+    rotulo_engine: str | None = None
+    rotulo_format_valid: bool = False
+    rotulo_rejection_reason: str | None = None
+    rotulo_candidates: list[PlateCandidate] = Field(default_factory=list)
+    rotulo_roi: CameraRoi | None = None
+    rotulo_crop_path: str | None = None
+    rotulo_crop_url: str | None = None
+
+    # --- Selección de motor (auto/fallback) ---
+    engine_attempts: list[EngineAttempt] = Field(default_factory=list)
+
+    # --- Ráfaga multiframe (consenso). En lectura de un solo frame: count=1. ---
+    burst_frame_count: int = 0
+    processed_frame_count: int = 0
+    usable_frame_count: int = 0
+    best_frame_index: int | None = None
+    best_frame_sharpness: float = 0.0
+    best_frame_brightness: float = 0.0
+    burst_frame_urls: list[str] = Field(default_factory=list)
+
+    # --- Evidencia de depuración (para calibrar ROI desde Ignition) ---
+    debug_frame_url: str | None = None
+    plate_roi_url: str | None = None
+    rotulo_roi_url: str | None = None
+    roi_overlay_url: str | None = None

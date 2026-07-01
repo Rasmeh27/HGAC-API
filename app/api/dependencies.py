@@ -8,9 +8,10 @@ tests con `app.dependency_overrides`.
 from functools import lru_cache
 
 from fastapi import HTTPException, status
+from loguru import logger
 
 from app.core.config import Settings, get_settings
-from app.core.errors import IntegrationError
+from app.core.errors import IntegrationError, LprError
 from app.integrations.biostar.biostar_factory import build_biostar_service
 from app.integrations.biostar.biostar_service import BioStarService
 from app.integrations.ignition.ignition_factory import build_ignition_writer
@@ -43,6 +44,7 @@ from app.modules.lpr.plate_validator import (
     PlateFormat,
     PlateValidator,
     build_plate_formats,
+    build_rotulo_formats,
 )
 
 
@@ -169,59 +171,192 @@ def camera_service_provider() -> CameraService:
     return _cached_camera_service()
 
 
-def _build_lpr_engine(
+# Alias amigables (LPR_ENGINE / LPR_FALLBACK_ENGINE) -> nombre canónico interno.
+_ENGINE_ALIASES = {
+    "opencv": "opencv_easyocr_poc",
+    "opencv_easyocr": "opencv_easyocr_poc",
+    "opencv_easyocr_poc": "opencv_easyocr_poc",
+    "easyocr": "opencv_easyocr_poc",
+    "simplelpr": "simplelpr_rd_poc",
+    "simple_lpr": "simplelpr_rd_poc",
+    "simplelpr_rd_poc": "simplelpr_rd_poc",
+    "auto": "auto",
+}
+
+
+def _resolve_engine_alias(name: str) -> str:
+    token = (name or "").strip().lower()
+    return _ENGINE_ALIASES.get(token, token)
+
+
+def _make_opencv_engine(
     settings: Settings,
-    formats: tuple[PlateFormat, ...],
+    *,
+    expected_formats: tuple[str, ...],
+    expected_length: int,
+    min_text_length: int,
+    max_text_length: int,
+    min_serial_digits: int,
+) -> LprEngine:
+    return OpenCvEasyOcrLprEngine(
+        detector=OpenCvPlateDetector(),
+        gpu=settings.local_lpr_gpu,
+        min_text_length=min_text_length,
+        max_text_length=max_text_length,
+        expected_formats=expected_formats,
+        expected_length=expected_length,
+        mode=settings.lpr_mode,
+        min_serial_digits=min_serial_digits,
+        early_stop_confidence=settings.lpr_read_min_confidence,
+        pad_left_ratio=settings.lpr_pad_left_ratio,
+        pad_right_ratio=settings.lpr_pad_right_ratio,
+        pad_y_ratio=settings.lpr_pad_y_ratio,
+    )
+
+
+def _make_simplelpr_engine(
+    settings: Settings,
     validator: PlateValidator,
     catalog: DominicanPlatePatternCatalog | None,
 ) -> LprEngine:
-    """Selecciona el motor LPR según `LPR_ENGINE`.
+    """Construye SimpleLPR. Puede lanzar `LprError` (no instalado / país inválido)."""
+    countries = tuple(
+        token.strip()
+        for token in settings.simple_lpr_countries.split(",")
+        if token.strip()
+    )
+    return SimpleLprEngine(
+        config=SimpleLprConfig(
+            countries=countries,
+            product_key_path=settings.simple_lpr_product_key_path,
+            min_confidence=settings.simple_lpr_min_confidence,
+            use_gpu=settings.simple_lpr_use_gpu,
+            cuda_device_id=settings.simple_lpr_cuda_device_id,
+            max_concurrent_ops=settings.simple_lpr_max_concurrent_ops,
+            plate_region_detection=settings.simple_lpr_plate_region_detection,
+            crop_to_plate_region=settings.simple_lpr_crop_to_plate_region,
+            max_substitutions=settings.simple_lpr_max_ocr_substitutions,
+            substitution_penalty=settings.simple_lpr_substitution_penalty,
+        ),
+        catalog=catalog,
+        validator=validator,
+    )
 
-    - `opencv_easyocr_poc`: motor propio OpenCV + EasyOCR (por defecto).
-    - `simplelpr_rd_poc`: motor alternativo SimpleLPR (dependencia opcional; se
-      importa de forma perezosa al construir el motor). Si SimpleLPR no está
-      instalado, `SimpleLprEngine` lanza `LprError` (se traduce a 503 en el
-      provider). El catálogo dominicano sigue siendo la autoridad de formato.
-    - Cualquier otro valor -> error claro.
-    """
-    if settings.lpr_engine == "opencv_easyocr_poc":
-        return OpenCvEasyOcrLprEngine(
-            detector=OpenCvPlateDetector(),
-            gpu=settings.local_lpr_gpu,
+
+def _build_plate_engine_by_name(
+    canonical: str,
+    settings: Settings,
+    plate_formats: tuple[PlateFormat, ...],
+    validator: PlateValidator,
+    catalog: DominicanPlatePatternCatalog | None,
+) -> LprEngine:
+    if canonical == "opencv_easyocr_poc":
+        return _make_opencv_engine(
+            settings,
+            expected_formats=tuple(fmt.regex for fmt in plate_formats),
+            expected_length=settings.lpr_plate_expected_length,
             min_text_length=settings.local_lpr_min_text_length,
             max_text_length=settings.local_lpr_max_text_length,
-            expected_formats=tuple(fmt.regex for fmt in formats),
-            expected_length=settings.lpr_plate_expected_length,
-            mode=settings.lpr_mode,
             min_serial_digits=settings.lpr_min_serial_digits,
-            early_stop_confidence=settings.lpr_read_min_confidence,
-            pad_left_ratio=settings.lpr_pad_left_ratio,
-            pad_right_ratio=settings.lpr_pad_right_ratio,
-            pad_y_ratio=settings.lpr_pad_y_ratio,
         )
-    if settings.lpr_engine == "simplelpr_rd_poc":
-        countries = tuple(
-            token.strip()
-            for token in settings.simple_lpr_countries.split(",")
-            if token.strip()
-        )
-        return SimpleLprEngine(
-            config=SimpleLprConfig(
-                countries=countries,
-                product_key_path=settings.simple_lpr_product_key_path,
-                min_confidence=settings.simple_lpr_min_confidence,
-                use_gpu=settings.simple_lpr_use_gpu,
-                cuda_device_id=settings.simple_lpr_cuda_device_id,
-                max_concurrent_ops=settings.simple_lpr_max_concurrent_ops,
-                plate_region_detection=settings.simple_lpr_plate_region_detection,
-                crop_to_plate_region=settings.simple_lpr_crop_to_plate_region,
-                max_substitutions=settings.simple_lpr_max_ocr_substitutions,
-                substitution_penalty=settings.simple_lpr_substitution_penalty,
-            ),
-            catalog=catalog,
-            validator=validator,
-        )
+    if canonical == "simplelpr_rd_poc":
+        return _make_simplelpr_engine(settings, validator, catalog)
     raise ValueError(f"LPR engine no soportado: {settings.lpr_engine}")
+
+
+def _build_plate_engines(
+    settings: Settings,
+    plate_formats: tuple[PlateFormat, ...],
+    validator: PlateValidator,
+    catalog: DominicanPlatePatternCatalog | None,
+) -> tuple[LprEngine, LprEngine | None, list[dict], str]:
+    """Resuelve `LPR_ENGINE` (+ fallback) y devuelve (primario, fallback, notas, etiqueta).
+
+    - `opencv_easyocr`: motor propio (por defecto). Sin fallback.
+    - `simplelpr`: SimpleLPR; si no se puede construir y hay `LPR_FALLBACK_ENGINE`,
+      degrada al fallback (sin romper). Sin fallback -> `LprError` (503 controlado).
+    - `auto`: intenta SimpleLPR como primario y OpenCV como fallback; si SimpleLPR
+      no está disponible, usa OpenCV como primario. Nunca rompe.
+
+    `notas` son intentos UNAVAILABLE (motor que se quiso usar pero no se pudo
+    construir), que el servicio expone en `engine_attempts`.
+    """
+    mode = _resolve_engine_alias(settings.lpr_engine)
+    if mode not in ("auto", "simplelpr_rd_poc", "opencv_easyocr_poc"):
+        raise ValueError(f"LPR engine no soportado: {settings.lpr_engine}")
+    fallback_name = (
+        _resolve_engine_alias(settings.lpr_fallback_engine)
+        if settings.lpr_fallback_engine.strip()
+        else ""
+    )
+    unavailable: list[dict] = []
+
+    def build(name: str) -> LprEngine:
+        return _build_plate_engine_by_name(name, settings, plate_formats, validator, catalog)
+
+    if mode == "auto":
+        try:
+            primary = _make_simplelpr_engine(settings, validator, catalog)
+            return primary, build("opencv_easyocr_poc"), unavailable, "auto"
+        except LprError as exc:
+            logger.warning("LPR auto: SimpleLPR no disponible ({}); usando OpenCV.", exc)
+            unavailable.append(
+                {"engine": "simplelpr_rd_poc", "status": "UNAVAILABLE", "error": str(exc)}
+            )
+            return build("opencv_easyocr_poc"), None, unavailable, "auto"
+
+    if mode == "simplelpr_rd_poc":
+        try:
+            primary = _make_simplelpr_engine(settings, validator, catalog)
+        except LprError as exc:
+            if fallback_name and fallback_name != "simplelpr_rd_poc":
+                logger.warning(
+                    "LPR: SimpleLPR no disponible ({}); usando fallback {}.",
+                    exc,
+                    fallback_name,
+                )
+                unavailable.append(
+                    {"engine": "simplelpr_rd_poc", "status": "UNAVAILABLE", "error": str(exc)}
+                )
+                return build(fallback_name), None, unavailable, "simplelpr_rd_poc"
+            raise  # sin fallback configurado -> 503 controlado en el provider
+        fallback = (
+            build(fallback_name)
+            if fallback_name and fallback_name != "simplelpr_rd_poc"
+            else None
+        )
+        return primary, fallback, unavailable, "simplelpr_rd_poc"
+
+    # opencv_easyocr_poc (por defecto). Sin fallback (es el motor confiable).
+    return build("opencv_easyocr_poc"), None, unavailable, "opencv_easyocr_poc"
+
+
+def _build_rotulo_engine_and_validator(
+    settings: Settings,
+) -> tuple[LprEngine | None, PlateValidator | None]:
+    """Motor + validador de RÓTULO (OpenCV/EasyOCR, formatos cortos propios).
+
+    Devuelve (None, None) si la lectura de rótulo está deshabilitada. El motor
+    carga EasyOCR de forma perezosa: solo pesa cuando una cámara con `rotulo_roi`
+    dispara una lectura.
+    """
+    if not settings.lpr_rotulo_enabled:
+        return None, None
+    rotulo_formats = build_rotulo_formats(settings.lpr_rotulo_format_name)
+    validator = PlateValidator(
+        formats=rotulo_formats,
+        min_length=settings.lpr_rotulo_min_text_length,
+        max_length=settings.lpr_rotulo_max_text_length,
+    )
+    engine = _make_opencv_engine(
+        settings,
+        expected_formats=tuple(fmt.regex for fmt in rotulo_formats),
+        expected_length=settings.lpr_rotulo_max_text_length,
+        min_text_length=settings.lpr_rotulo_min_text_length,
+        max_text_length=settings.lpr_rotulo_max_text_length,
+        min_serial_digits=settings.lpr_rotulo_min_serial_digits,
+    )
+    return engine, validator
 
 
 @lru_cache
@@ -240,9 +375,13 @@ def _cached_lpr_read_service() -> LprReadService:
         min_length=settings.local_lpr_min_text_length,
         max_length=settings.local_lpr_max_text_length,
     )
+    primary_engine, fallback_engine, unavailable, engine_mode = _build_plate_engines(
+        settings, formats, validator, catalog
+    )
+    rotulo_engine, rotulo_validator = _build_rotulo_engine_and_validator(settings)
     return LprReadService(
         camera_service=_cached_camera_service(),
-        engine=_build_lpr_engine(settings, formats, validator, catalog),
+        engine=primary_engine,
         storage=LprResultStorage(
             base_path=settings.lpr_evidence_base_path,
             public_base_url=settings.evidence_public_base_url,
@@ -255,6 +394,27 @@ def _cached_lpr_read_service() -> LprReadService:
         ambiguous_min_score_delta=settings.lpr_ambiguous_min_score_delta,
         ambiguous_candidate_distance=settings.lpr_ambiguous_candidate_distance,
         require_multiframe_confirmation=settings.lpr_require_multiframe_confirmation,
+        # Multi-motor (auto/fallback).
+        fallback_engine=fallback_engine,
+        engine_mode=engine_mode,
+        unavailable_engines=unavailable,
+        # Rótulo de camión (lectura independiente sobre rotulo_roi).
+        rotulo_engine=rotulo_engine,
+        rotulo_validator=rotulo_validator,
+        rotulo_min_confidence=settings.lpr_rotulo_read_min_confidence,
+        # Evidencia de depuración (recortes de ROI + overlay) para calibrar.
+        save_debug_evidence=settings.lpr_save_debug_evidence,
+        evidence_jpeg_quality=settings.lpr_evidence_jpeg_quality,
+        # Ráfaga multiframe + consenso (placas en movimiento).
+        burst_frame_count=settings.lpr_burst_frame_count,
+        burst_interval_ms=settings.lpr_burst_interval_ms,
+        burst_top_frames=settings.lpr_burst_top_frames,
+        min_frame_sharpness=settings.lpr_min_frame_sharpness,
+        min_frame_brightness=settings.lpr_min_frame_brightness,
+        max_frame_brightness=settings.lpr_max_frame_brightness,
+        consensus_min_votes=settings.lpr_consensus_min_votes,
+        single_frame_accept_confidence=settings.lpr_single_frame_accept_confidence,
+        save_burst_frames=settings.lpr_save_burst_frames,
         # Publica cada lectura del endpoint formal en el "latest" de Ignition
         # (escritura atómica). Si el archivo está bloqueado, el observador lo
         # registra sin romper la respuesta HTTP.

@@ -124,7 +124,9 @@ class CameraService:
         procesamiento no altere el intervalo visual entre imágenes.
         """
         config = self._registry.get(camera_id)
-        count = max(1, min(count, 10))
+        # Tope de seguridad de la ráfaga (evita sesiones interminables). La lectura
+        # LPR multiframe usa ~12; se deja margen holgado.
+        count = max(1, min(count, 30))
         interval_seconds = max(0, interval_ms) / 1000.0
         provider = self._provider_factory(config)
         session = provider.open_session(StreamOptions(jpeg_quality=90))

@@ -28,7 +28,10 @@ class CameraConfig:
 
     `source` es la fuente física real (``USB:0`` o la URL RTSP completa, que para
     RTSP puede llevar credenciales). `device_index` es el índice OpenCV para USB.
-    Los campos `roi_*` describen la región de interés para LPR (0 = sin ROI).
+    Los campos `roi_*` describen la región de interés para LPR (placa) y los
+    `rotulo_roi_*` la región del rótulo de camión (independiente del de placa).
+    En ambos casos, ancho/alto = 0 significa "sin ROI" (se procesa el frame
+    completo para esa lectura).
 
     Para exponer la cámara a Ignition/API usar SIEMPRE `safe_source`, que elimina
     credenciales de las URLs RTSP.
@@ -43,10 +46,18 @@ class CameraConfig:
     roi_y: int = 0
     roi_width: int = 0
     roi_height: int = 0
+    rotulo_roi_x: int = 0
+    rotulo_roi_y: int = 0
+    rotulo_roi_width: int = 0
+    rotulo_roi_height: int = 0
 
     @property
     def has_lpr_roi(self) -> bool:
         return self.roi_width > 0 and self.roi_height > 0
+
+    @property
+    def has_rotulo_roi(self) -> bool:
+        return self.rotulo_roi_width > 0 and self.rotulo_roi_height > 0
 
     @property
     def safe_source(self) -> str:
@@ -105,6 +116,7 @@ class CameraRegistry:
             if source_env:
                 source = os.environ.get(source_env, "")
             roi = row.get("lpr_roi") or {}
+            rotulo_roi = row.get("rotulo_roi") or {}
             cameras.append(
                 CameraConfig(
                     camera_id=str(row["camera_id"]),
@@ -116,6 +128,10 @@ class CameraRegistry:
                     roi_y=int(roi.get("y", 0)),
                     roi_width=int(roi.get("width", 0)),
                     roi_height=int(roi.get("height", 0)),
+                    rotulo_roi_x=int(rotulo_roi.get("x", 0)),
+                    rotulo_roi_y=int(rotulo_roi.get("y", 0)),
+                    rotulo_roi_width=int(rotulo_roi.get("width", 0)),
+                    rotulo_roi_height=int(rotulo_roi.get("height", 0)),
                 )
             )
         return cls(cameras=cameras)

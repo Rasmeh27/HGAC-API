@@ -40,6 +40,17 @@ class LprResultStorage:
     ) -> StoredEvidence:
         return self._save("crops", crop_bytes, detected_at, prefix)
 
+    def save(
+        self, subdir: str, data: bytes, detected_at: datetime, prefix: str
+    ) -> StoredEvidence:
+        """Guarda evidencia arbitraria en ``<base>/<subdir>``.
+
+        Usado para la evidencia de depuración (recortes de ROI, overlay) en
+        subdirectorios propios (``roi``, ``overlay``), separados de los
+        ``frames``/``crops`` del flujo principal.
+        """
+        return self._save(subdir, data, detected_at, prefix)
+
     def _save(
         self, subdir: str, data: bytes, detected_at: datetime, prefix: str
     ) -> StoredEvidence:

@@ -32,6 +32,33 @@ DEFAULT_PLATE_FORMATS: tuple[PlateFormat, ...] = (
     PlateFormat(name="LETTER_6_DIGITS", regex=KNOWN_PLATE_FORMATS["LETTER_6_DIGITS"]),
 )
 
+# Formatos de RÓTULO de camión (identificador corto pintado en la carrocería).
+# Son DISTINTOS de los de placa a propósito: un rótulo "E204" (1 letra + 3
+# dígitos) NO debe validarse como placa dominicana, ni viceversa.
+KNOWN_ROTULO_FORMATS: dict[str, str] = {
+    "LETTER_3_DIGITS": r"^[A-Z][0-9]{3}$",  # p.ej. E204, A123, B456
+    # Opcional/laxo: 1-2 letras + 2-4 dígitos, por si aparece en datos reales.
+    "LETTERS_2_4_DIGITS": r"^[A-Z]{1,2}[0-9]{2,4}$",
+}
+
+DEFAULT_ROTULO_FORMATS: tuple[PlateFormat, ...] = (
+    PlateFormat(name="LETTER_3_DIGITS", regex=KNOWN_ROTULO_FORMATS["LETTER_3_DIGITS"]),
+    PlateFormat(name="LETTERS_2_4_DIGITS", regex=KNOWN_ROTULO_FORMATS["LETTERS_2_4_DIGITS"]),
+)
+
+
+def build_rotulo_formats(names: str = "") -> tuple[PlateFormat, ...]:
+    """Resuelve CSV de nombres contra el catálogo de RÓTULO (no el de placa).
+
+    Vacío o sin coincidencias -> `DEFAULT_ROTULO_FORMATS`.
+    """
+    formats: list[PlateFormat] = []
+    for raw_name in (names or "").split(","):
+        name = raw_name.strip()
+        if name in KNOWN_ROTULO_FORMATS:
+            formats.append(PlateFormat(name=name, regex=KNOWN_ROTULO_FORMATS[name]))
+    return tuple(formats) or DEFAULT_ROTULO_FORMATS
+
 
 def build_plate_formats(
     names: str, regex_override: str | None = None

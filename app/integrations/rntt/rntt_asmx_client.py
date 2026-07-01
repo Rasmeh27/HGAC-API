@@ -55,6 +55,9 @@ class RnttAsmxClient:
         timeout_seconds: int = 30,
         enable_diagnostic_fallbacks: bool = False,
     ) -> None:
+        # El WebService RNTT exige autenticación (sin credenciales responde
+        # "No tiene acceso a este servicio"): base_url, username y password son
+        # OBLIGATORIOS. La capa de dependencias traduce este error a 503.
         if not base_url or not username or not password:
             raise RnttError("RNTT base_url/username/password no configurados")
 
