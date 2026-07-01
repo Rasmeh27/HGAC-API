@@ -205,11 +205,11 @@ def _make_opencv_engine(
         max_text_length=max_text_length,
         expected_formats=expected_formats,
         expected_length=expected_length,
+        upscale=settings.lpr_ocr_upscale,
         mode=settings.lpr_mode,
         min_serial_digits=min_serial_digits,
         early_stop_confidence=settings.lpr_read_min_confidence,
-        pad_left_ratio=settings.lpr_pad_left_ratio,
-        pad_right_ratio=settings.lpr_pad_right_ratio,
+        pad_x_ratio=max(settings.lpr_pad_left_ratio, settings.lpr_pad_right_ratio),
         pad_y_ratio=settings.lpr_pad_y_ratio,
     )
 

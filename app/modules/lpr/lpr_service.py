@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -159,7 +160,7 @@ class LprService:
         # count <= 1 => single-frame (comportamiento histórico). Producción usa 12.
         burst_frame_count: int = 1,
         burst_interval_ms: int = 0,
-        burst_top_frames: int = 1,
+        burst_top_frames: int = 5,
         min_frame_sharpness: float = 80.0,
         min_frame_brightness: float = 30.0,
         max_frame_brightness: float = 235.0,
@@ -194,8 +195,8 @@ class LprService:
         self._rotulo_min_confidence = rotulo_min_confidence
         self._save_debug_evidence = save_debug_evidence
         self._evidence_jpeg_quality = evidence_jpeg_quality
-        self._burst_frame_count = burst_frame_count
-        self._burst_interval_ms = burst_interval_ms
+        self._burst_frame_count = max(1, burst_frame_count)
+        self._burst_interval_ms = max(0, burst_interval_ms)
         self._burst_top_frames = max(1, burst_top_frames)
         self._min_frame_sharpness = min_frame_sharpness
         self._min_frame_brightness = min_frame_brightness
@@ -352,32 +353,50 @@ class LprService:
         all_candidates: list[dict] = []
         per_frame_attempts: list[list[dict]] = []
         reads_by_index: dict[int, tuple[FrameCapture, LprEngineResult | None, str | None]] = {}
+        processed_caps: list[FrameCapture] = []
         for cap in top:
+            processed_caps.append(cap)
             adopted, name, attempts = self._run_engines_on_image(cap.plate_crop, event_id)
             per_frame_attempts.append(attempts)
             reads_by_index[cap.index] = (cap, adopted, name)
             if adopted is not None and adopted.best_raw_text is not None:
                 all_candidates.extend(self._frame_candidates(adopted, name, cap))
+            if not usable and self._has_minimum_consensus(all_candidates):
+                break
 
         engine_attempts = list(self._unavailable_engines) + self._merge_engine_attempts(
             per_frame_attempts
         )
 
         # 3. Consenso.
-        cons = self._select_best_plate_candidate(all_candidates, len(top))
+        processed_count = len(processed_caps)
+        cons = self._select_best_plate_candidate(all_candidates, processed_count)
         status = cons.status
+        outcome_accepted = cons.accepted
+        rejection_reason = _REJECTION_BY_STATUS.get(status)
+        if cons.accepted and cons.votes < self._consensus_min_votes and not usable:
+            status = LprReadStatus.LOW_CONFIDENCE
+            outcome_accepted = False
+            rejection_reason = "insufficient_consensus"
+        elif (
+            not cons.accepted
+            and status is LprReadStatus.LOW_CONFIDENCE
+            and cons.votes < self._consensus_min_votes
+        ):
+            rejection_reason = "insufficient_consensus"
         if not cons.accepted and not usable:
             # Ningún frame utilizable: lectura no confiable.
             status = LprReadStatus.BLURRY_FRAME
+            rejection_reason = _REJECTION_BY_STATUS.get(status)
 
         # 4. Frame de evidencia: el del ganador si se aceptó; si no, el de mayor calidad.
         winner = cons.winner_group
-        if cons.accepted and winner is not None:
+        if outcome_accepted and winner is not None:
             best_index = winner["representative"].get("frame_index")
         else:
-            best_index = top[0].index if top else None
+            best_index = processed_caps[0].index if processed_caps else None
         best_cap, best_er, best_name = reads_by_index.get(
-            best_index, (top[0] if top else captures[0], None, None)
+            best_index, (processed_caps[0] if processed_caps else captures[0], None, None)
         )
 
         normalized_winner = winner["normalized_text"] if winner else None
@@ -388,19 +407,19 @@ class LprService:
         )
         outcome = _PlateOutcome(
             status=status,
-            rejection_reason=_REJECTION_BY_STATUS.get(status),
+            rejection_reason=rejection_reason,
             engine_result=best_er,
             engine_label=self._engine_label(best_name or (winner["representative"]["engine"] if winner else None)),
             plate_engine=best_name or (winner["representative"]["engine"] if winner else self._engine.name),
             attempts=engine_attempts,
-            plate=(winner["representative"]["raw_text"] if cons.accepted and winner else None),
-            plate_normalized=(normalized_winner if cons.accepted else None),
+            plate=(winner["representative"]["raw_text"] if outcome_accepted and winner else None),
+            plate_normalized=(normalized_winner if outcome_accepted else None),
             confidence=(winner["max_confidence"] if winner else 0.0),
             format_valid=(winner["format_valid"] if winner else False),
             classification=classification,
             candidates=self._rank_candidates_for_response(all_candidates),
             burst_frame_count=len(captures),
-            processed_frame_count=len(top),
+            processed_frame_count=processed_count,
             usable_frame_count=len(usable),
             best_frame_index=best_cap.index if best_cap else None,
             best_frame_sharpness=best_cap.quality.sharpness if best_cap and best_cap.quality else 0.0,
@@ -442,7 +461,7 @@ class LprService:
             plate_label=outcome.plate or normalized_winner,
             rotulo_label=rotulo.rotulo,
         )
-        burst_urls = self._save_burst_frame_urls(top, detected_at)
+        burst_urls = self._save_burst_frame_urls(processed_caps, detected_at)
 
         return self._build_response(
             event_id=event_id,
@@ -573,7 +592,10 @@ class LprService:
 
         scored.sort(key=lambda g: g["score"], reverse=True)
         valid = [g for g in scored if g["format_valid"]]
-        winner = (valid or scored)[0]
+        consensus_valid = [
+            group for group in valid if group["votes"] >= self._consensus_min_votes
+        ]
+        winner = (consensus_valid or valid or scored)[0]
 
         accepted = False
         if winner["format_valid"]:
@@ -599,6 +621,27 @@ class LprService:
             votes=winner["votes"],
             total=processed_count,
         )
+
+    def _has_minimum_consensus(self, candidates: list[dict]) -> bool:
+        groups: dict[str, list[dict]] = {}
+        for candidate in candidates:
+            normalized = candidate.get("normalized_text")
+            if normalized:
+                groups.setdefault(normalized, []).append(candidate)
+        for normalized, items in groups.items():
+            frames = {item.get("frame_index") for item in items}
+            votes = len(frames)
+            max_confidence = max(
+                (float(item.get("confidence") or 0.0) for item in items),
+                default=0.0,
+            )
+            if (
+                votes >= self._consensus_min_votes
+                and max_confidence >= self._min_confidence
+                and self._is_format_valid(normalized)
+            ):
+                return True
+        return False
 
     @staticmethod
     def _rank_candidates_for_response(candidates: list[dict]) -> list[dict]:
@@ -730,7 +773,10 @@ class LprService:
         El candidato rechazado NO se expone como `plate`; no se infiere ni
         autocompleta ningún carácter (p.ej. G237627 NO se "corrige" a G737627).
         """
-        normalized = self._normalizer.normalize(engine_result.best_raw_text)
+        normalized = (
+            engine_result.best_normalized_text
+            or self._normalizer.normalize(engine_result.best_raw_text)
+        )
         confidence = engine_result.confidence
 
         classification = self._catalog.classify(normalized) if self._catalog else None
@@ -740,7 +786,6 @@ class LprService:
             else self._validator.is_format_valid(normalized)
         )
         enriched_scores = self._enrich_candidate_scores(engine_result.candidate_scores)
-
         if confidence < self._min_confidence:
             status = LprReadStatus.LOW_CONFIDENCE
             rejection_reason: str | None = "low_confidence"
@@ -1069,6 +1114,10 @@ class LprService:
         engine_result = plate.engine_result
         classification = plate.classification
         evidence = evidence or {}
+        camera_config = self._camera.get_config(request.camera_id)
+        camera_ip = ""
+        if camera_config.source_type == "rtsp":
+            camera_ip = urlsplit(camera_config.source).hostname or ""
 
         # El crop de placa se guarda SOLO si hubo candidato (texto): sin texto, el
         # servicio fuerza no-crop aunque el motor haya entregado bytes.
@@ -1094,10 +1143,31 @@ class LprService:
             if plate.consensus_total
             else 0.0
         )
+        frame_candidates = [
+            {
+                "frame_index": candidate.get("frame_index"),
+                "text": candidate.get("normalized_text"),
+                "raw_text": candidate.get("raw_text"),
+                "confidence": candidate.get("confidence", 0.0),
+                "format_valid": candidate.get("format_valid", False),
+                "frame_quality_score": candidate.get("frame_quality_score"),
+                "sharpness": candidate.get("sharpness"),
+                "brightness": candidate.get("brightness"),
+            }
+            for candidate in plate.candidates
+            if candidate.get("frame_index") is not None
+        ]
+        frames_requested = self._burst_frame_count if self._burst_frame_count > 1 else 1
+        frames_captured = plate.burst_frame_count or frames_requested
+        frames_processed = plate.processed_frame_count or (
+            1 if engine_result is not None else 0
+        )
 
         response = LprReadResponse(
             event_id=event_id,
             camera_id=request.camera_id,
+            camera_name=camera_config.camera_name,
+            camera_ip=camera_ip,
             status=plate.status,
             plate=plate.plate,
             plate_normalized=plate.plate_normalized,
@@ -1133,13 +1203,17 @@ class LprService:
             camera_roi=camera_roi,
             digit_count=engine_result.digit_count if engine_result else 0,
             alpha_count=engine_result.alpha_count if engine_result else 0,
-            consensus_votes=plate.consensus_votes,
-            consensus_total=plate.consensus_total,
-            consensus_ratio=consensus_ratio,
             candidate_rejections=(
                 list(engine_result.candidate_rejections) if engine_result else []
             ),
             candidate_scores=candidate_scores,
+            frames_requested=frames_requested,
+            frames_captured=frames_captured,
+            frames_processed=frames_processed,
+            consensus_votes=plate.consensus_votes,
+            consensus_total=plate.consensus_total,
+            consensus_ratio=consensus_ratio,
+            frame_candidates=frame_candidates,
             # --- Contrato extendido ---
             plate_status=plate.status,
             plate_engine=plate.plate_engine,
@@ -1173,16 +1247,12 @@ class LprService:
         return response
 
     def _notify_observer(self, response: LprReadResponse) -> None:
-        """Publica la lectura al observador (p.ej. Ignition latest), si hay uno.
-
-        Aísla cualquier fallo (archivo bloqueado por Ignition, disco lleno, etc.)
-        para que la respuesta LPR se devuelva siempre.
-        """
+        """Publica la lectura al observador, si hay uno, sin romper la respuesta."""
         if self._result_observer is None:
             return
         try:
             self._result_observer(response)
-        except Exception:  # noqa: BLE001 - publicar el latest no debe romper la lectura
+        except Exception:  # noqa: BLE001 - publicar latest no debe romper LPR
             logger.exception(
                 "LPR {}: no se pudo publicar la lectura al observador",
                 response.event_id,

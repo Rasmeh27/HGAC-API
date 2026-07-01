@@ -28,9 +28,7 @@ from app.integrations.camera.camera_provider import (
     StreamOptions,
 )
 from app.integrations.lpr.lpr_engine import LprEngine, LprEngineResult
-from app.integrations.lpr.simple_lpr_engine import SimpleLprConfig, SimpleLprEngine
 from app.main import app
-from app.modules.lpr.domain.plate_pattern_catalog import DominicanPlatePatternCatalog
 from app.modules.camera.camera_registry import CameraRegistry
 from app.modules.camera.camera_service import CameraService
 from app.modules.camera.camera_stream_manager import CameraStreamManager
@@ -39,7 +37,6 @@ from app.modules.lpr.lpr_result_storage import LprResultStorage
 from app.modules.lpr.lpr_service import LprService
 from app.modules.lpr.plate_normalizer import PlateNormalizer
 from app.modules.lpr.plate_validator import PlateFormat, PlateValidator
-from tests._simplelpr_fakes import build_fake_simplelpr
 
 TWO_LETTERS_5_DIGITS = (
     PlateFormat(name="TWO_LETTERS_5_DIGITS", regex=r"^[A-Z]{2}[0-9]{5}$"),
@@ -96,6 +93,7 @@ class _FakeEngine(LprEngine):
         candidate_count: int = 1,
         ocr_attempt_count: int = 6,
         variant: str = "grayscale",
+        normalized_text: str | None = None,
     ) -> None:
         self._raw = raw_text
         self._confidence = confidence
@@ -103,13 +101,18 @@ class _FakeEngine(LprEngine):
         self._candidate_count = candidate_count
         self._ocr_attempt_count = ocr_attempt_count
         self._variant = variant
+        self._normalized_text = normalized_text
 
     @property
     def name(self) -> str:
         return "opencv_easyocr_poc"
 
     def read_plate(self, frame_bgr) -> LprEngineResult:
-        normalized = _CLEAN.sub("", self._raw.upper()) if self._raw else None
+        normalized = (
+            self._normalized_text
+            if self._normalized_text is not None
+            else (_CLEAN.sub("", self._raw.upper()) if self._raw else None)
+        )
         return LprEngineResult(
             best_raw_text=self._raw,
             best_normalized_text=normalized,
@@ -118,6 +121,29 @@ class _FakeEngine(LprEngine):
             candidate_count=self._candidate_count,
             ocr_attempt_count=self._ocr_attempt_count,
             preprocessing_variant=self._variant if self._raw else None,
+        )
+
+
+class _SequenceEngine(LprEngine):
+    def __init__(self, readings: list[tuple[str | None, str | None, float]]) -> None:
+        self._readings = readings
+        self._index = 0
+
+    @property
+    def name(self) -> str:
+        return "opencv_easyocr_poc"
+
+    def read_plate(self, frame_bgr) -> LprEngineResult:
+        raw, normalized, confidence = self._readings[self._index]
+        self._index += 1
+        return LprEngineResult(
+            best_raw_text=raw,
+            best_normalized_text=normalized,
+            confidence=confidence,
+            plate_crop_jpeg=_SAMPLE_JPEG if raw else None,
+            candidate_count=1,
+            ocr_attempt_count=1,
+            preprocessing_variant="original" if raw else None,
         )
 
 
@@ -138,6 +164,8 @@ def lpr_env(tmp_path):
         engine: LprEngine,
         provider: CameraProvider | None = None,
         formats: tuple[PlateFormat, ...] | None = None,
+        burst_frame_count: int = 1,
+        consensus_min_votes: int = 2,
     ):
         provider = provider or _FakeProvider()
         lpr_dir = tmp_path / "evidence" / "lpr"
@@ -169,6 +197,9 @@ def lpr_env(tmp_path):
             validator=PlateValidator(formats=formats) if formats else PlateValidator(),
             min_confidence=70.0,
             max_processing_ms=5000,
+            burst_frame_count=burst_frame_count,
+            burst_interval_ms=0,
+            consensus_min_votes=consensus_min_votes,
         )
         app.dependency_overrides[lpr_read_service_provider] = lambda: service
         return SimpleNamespace(
@@ -297,6 +328,69 @@ def test_two_letters_format_accepts_serial(lpr_env) -> None:
     assert body["format_valid"] is True
     assert body["rejection_reason"] is None
     assert body["expected_format"] == "TWO_LETTERS_5_DIGITS"
+
+
+def test_service_validates_engine_corrected_normalized_text(lpr_env) -> None:
+    lpr_env(
+        _FakeEngine(
+            raw_text="6737627",
+            normalized_text="G737627",
+            confidence=88.1,
+            crop=_SAMPLE_JPEG,
+        )
+    )
+
+    body = client.post(READS_URL, json=_payload()).json()
+
+    assert body["status"] == "PLATE_DETECTED"
+    assert body["plate"] == "6737627"
+    assert body["plate_normalized"] == "G737627"
+    assert body["best_raw_text"] == "6737627"
+    assert body["best_normalized_text"] == "G737627"
+    assert body["format_valid"] is True
+
+
+def test_burst_consensus_selects_temporal_majority(lpr_env) -> None:
+    engine = _SequenceEngine(
+        [
+            ("6237627", "G237627", 88.0),
+            ("6737627", "G737627", 73.0),
+            ("6737627", "G737627", 76.0),
+            (None, None, 0.0),
+            ("6737627", "G737627", 80.0),
+        ]
+    )
+    lpr_env(engine, burst_frame_count=5, consensus_min_votes=2)
+
+    body = client.post(READS_URL, json=_payload()).json()
+
+    assert body["status"] == "PLATE_DETECTED"
+    assert body["plate_normalized"] == "G737627"
+    assert body["frames_requested"] == 5
+    assert body["frames_captured"] == 5
+    assert body["frames_processed"] == 3
+    assert body["consensus_votes"] == 2
+    assert body["consensus_total"] == 3
+    assert body["consensus_ratio"] == 0.667
+    assert len(body["frame_candidates"]) == 3
+
+
+def test_burst_rejects_single_vote_as_insufficient_consensus(lpr_env) -> None:
+    engine = _SequenceEngine(
+        [
+            ("A123456", "A123456", 90.0),
+            ("A123457", "A123457", 89.0),
+            ("A123458", "A123458", 88.0),
+        ]
+    )
+    lpr_env(engine, burst_frame_count=3, consensus_min_votes=2)
+
+    body = client.post(READS_URL, json=_payload()).json()
+
+    assert body["status"] == "LOW_CONFIDENCE"
+    assert body["rejection_reason"] == "insufficient_consensus"
+    assert body["plate_normalized"] is None
+    assert body["consensus_votes"] == 1
 
 
 def test_two_letters_format_rejects_header_text(lpr_env) -> None:
@@ -483,45 +577,3 @@ def test_disabled_module_returns_503(lpr_env) -> None:
         assert "disabled" in response.json()["detail"].lower()
     finally:
         app.dependency_overrides.pop(settings_provider, None)
-
-
-# --- Motor SimpleLPR a través del endpoint (con `simplelpr` falso) ---
-# Mismo contrato que el motor OpenCV: el frame lo entrega CameraService, el engine
-# devuelve el mejor candidato y el servicio decide/valida con el catálogo/validador.
-
-
-def _simplelpr_engine(match_specs, countries=("19", "74", "96")) -> SimpleLprEngine:
-    return SimpleLprEngine(
-        config=SimpleLprConfig(countries=countries),
-        catalog=DominicanPlatePatternCatalog(),
-        simplelpr_module=build_fake_simplelpr(match_specs),
-    )
-
-
-def test_endpoint_with_simplelpr_engine_corrects_and_detects(lpr_env) -> None:
-    # SimpleLPR "lee" 0F00105; el engine corrige a OF00105 (1 sustitución) y el
-    # endpoint lo acepta. El motor se reporta como simplelpr_rd_poc.
-    lpr_env(_simplelpr_engine([("0F00105", 0.92, "PR")]), formats=TWO_LETTERS_5_DIGITS)
-
-    body = client.post(READS_URL, json=_payload()).json()
-    assert body["engine"] == "simplelpr_rd_poc"
-    assert body["status"] == "PLATE_DETECTED"
-    assert body["plate"] == "OF00105"
-    assert body["plate_normalized"] == "OF00105"
-    assert body["format_valid"] is True
-    # El OCR crudo queda trazable en los candidatos (no se pierde).
-    ocr_texts = {score.get("ocr_text") for score in body["candidate_scores"]}
-    assert "0F00105" in ocr_texts
-
-
-def test_endpoint_with_simplelpr_engine_numeric_only_is_format_mismatch(lpr_env) -> None:
-    # Lectura solo numérica: el catálogo dominicano (no los países vecinos) manda
-    # y la rechaza como placa válida.
-    lpr_env(_simplelpr_engine([("460432", 0.95, "CO")]), formats=TWO_LETTERS_5_DIGITS)
-
-    body = client.post(READS_URL, json=_payload()).json()
-    assert body["engine"] == "simplelpr_rd_poc"
-    assert body["status"] == "FORMAT_MISMATCH"
-    assert body["plate"] is None
-    assert body["best_raw_text"] == "460432"
-    assert body["format_valid"] is False

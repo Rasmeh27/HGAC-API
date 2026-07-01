@@ -16,6 +16,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # RTSP desde `source_env`) las encuentren. `pydantic-settings` ya lee `.env` para
 # poblar `Settings`, pero no exporta esas variables a `os.environ`; no sobreescribe
 # variables ya presentes en el entorno (override=False por defecto).
+
+
+# CameraRegistry resuelve variables dinámicas por cámara (source_env). Cargar el
+# archivo aquí permite que también estén disponibles mediante os.environ.
 load_dotenv()
 
 
@@ -84,8 +88,8 @@ class Settings(BaseSettings):
     # Se captura una ráfaga por lectura; se puntúa la calidad del ROI de cada frame,
     # se procesan los mejores y se vota por consenso. count/interval cubren ~1-2 s de
     # paso del vehículo. count=1 => comportamiento single-frame (compatibilidad).
-    lpr_burst_frame_count: int = Field(default=12, ge=1, le=30)
-    lpr_burst_interval_ms: int = Field(default=120, ge=0)
+    lpr_burst_frame_count: int = Field(default=5, ge=1, le=30)
+    lpr_burst_interval_ms: int = Field(default=200, ge=0, le=2000)
     lpr_burst_top_frames: int = Field(default=5, ge=1)
     # Umbrales de calidad del ROI de placa (Laplaciano y brillo 0-255).
     lpr_min_frame_sharpness: float = 80.0
@@ -93,16 +97,19 @@ class Settings(BaseSettings):
     lpr_max_frame_brightness: float = 235.0
     # Consenso: votos mínimos (frames distintos con la misma placa) y confianza para
     # aceptar una placa válida vista en un solo frame.
-    lpr_consensus_min_votes: int = Field(default=2, ge=1)
+    lpr_consensus_min_votes: int = Field(default=2, ge=1, le=10)
     lpr_single_frame_accept_confidence: float = Field(default=75.0, ge=0, le=100)
     # Guardar los top frames de la ráfaga como evidencia (burst_frame_urls). Off por
     # defecto para no llenar evidence/ con archivos.
     lpr_save_burst_frames: bool = False
     lpr_save_debug_frames: bool = True
-    lpr_max_processing_ms: int = 5000
+    lpr_max_processing_ms: int = 15000
+    lpr_early_consensus: bool = True
+    lpr_ocr_upscale: int = Field(default=2, ge=1, le=4)
+
     lpr_evidence_base_path: str = "./evidence/lpr"
     # Modo de rendimiento del motor: fast (rápido) | balanced | exhaustive (debug).
-    lpr_mode: Literal["fast", "balanced", "exhaustive"] = "balanced"
+    lpr_mode: Literal["fast", "balanced", "exhaustive"] = "fast"
     # Mínimo de dígitos para que un candidato pueda ser placa (descarta encabezados).
     lpr_min_serial_digits: int = 3
     # Padding del recorte de placa antes del OCR. Asimétrico: más margen a la
@@ -117,6 +124,7 @@ class Settings(BaseSettings):
     # Override de regex SOLO para un nombre fuera del catálogo (vacío = catálogo).
     lpr_plate_format_regex: str = ""
     lpr_plate_expected_length: int = 7
+
 
     # --- LPR: catálogo de placas dominicanas (referencia operativa DGII) ---
     # Catálogo operativo para la PoC; NO sustituye validación futura contra
